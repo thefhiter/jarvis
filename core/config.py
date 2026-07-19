@@ -65,6 +65,8 @@ class Config:
     ws_port: int = 8765
     hud_fullscreen: bool = False
     hud_always_on_top: bool = True
+    enable_tray: bool = True           # show a system-tray icon (persistent app)
+    close_to_tray: bool = False        # X button hides to tray instead of quitting
 
     # ── powers ──────────────────────────────────────────────────
     allow_shutdown: bool = True        # allow lock/sleep/shutdown/restart commands

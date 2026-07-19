@@ -86,17 +86,17 @@
   .hint{ position:absolute; bottom:26px; left:32px; font-family:var(--mono); font-size:10px; letter-spacing:.2em;
            text-transform:uppercase; color:rgba(var(--accent),.4); z-index:6; }
 
-  .powerbtn{ position:absolute; top:24px; right:30px; z-index:8; pointer-events:auto; cursor:pointer;
-           width:26px; height:26px; border-radius:50%; border:1.5px solid rgba(var(--danger),.5);
-           color:rgba(var(--danger),.8); display:flex; align-items:center; justify-content:center;
-           font-size:14px; transition:all .2s; background:rgba(255,74,74,.06); }
-  .powerbtn:hover{ background:rgba(255,74,74,.2); box-shadow:0 0 14px rgba(var(--danger),.6); color:#fff; }
-
-  .gear{ position:absolute; top:24px; right:64px; z-index:8; pointer-events:auto; cursor:pointer;
-           width:26px; height:26px; border-radius:50%; border:1.5px solid rgba(var(--accent),.5);
-           color:rgba(var(--accent),.85); display:flex; align-items:center; justify-content:center;
-           font-size:15px; transition:all .2s; background:rgba(56,225,255,.06); }
-  .gear:hover{ background:rgba(56,225,255,.18); box-shadow:0 0 14px rgba(var(--accent),.6); color:#fff; transform:rotate(45deg); }
+  /* window-control cluster (top-right) — makes the frameless HUD read as a real app */
+  .winctrls{ position:absolute; top:20px; right:22px; z-index:9; display:flex; gap:9px; pointer-events:auto; }
+  .wbtn{ -webkit-app-region:no-drag; cursor:pointer; width:26px; height:26px; border-radius:50%;
+           display:flex; align-items:center; justify-content:center; font-size:14px; line-height:1;
+           transition:all .18s; border:1.5px solid rgba(var(--accent),.45);
+           color:rgba(var(--accent),.82); background:rgba(56,225,255,.06); user-select:none; }
+  .wbtn:hover{ background:rgba(56,225,255,.18); box-shadow:0 0 14px rgba(var(--accent),.6); color:#fff; }
+  .wbtn.danger{ border-color:rgba(var(--danger),.5); color:rgba(var(--danger),.85); background:rgba(255,74,74,.06); }
+  .wbtn.danger:hover{ background:rgba(255,74,74,.22); box-shadow:0 0 14px rgba(var(--danger),.6); color:#fff; }
+  #gear{ font-size:15px; }
+  #gear:hover{ transform:rotate(45deg); }
 
   /* ── text command bar ── */
   .cmdbar{ position:absolute; left:50%; transform:translateX(-50%) translateY(20px); bottom:14px;
@@ -144,7 +144,7 @@
   .panel .btn.cancel:hover{ color:#fff; }
   .hide-field{ display:none !important; }
 
-  @media (prefers-reduced-motion: reduce){ .dot,.subs .jarvis .cursor{ animation:none } .gear:hover{ transform:none } }
+  @media (prefers-reduced-motion: reduce){ .dot,.subs .jarvis .cursor{ animation:none } #gear:hover{ transform:none } }
 </style>
 </head>
 <body>
@@ -178,8 +178,12 @@
 
   <div class="hint" id="hint">SAY “HEY JARVIS” &nbsp;·&nbsp; CLAP CLAP &nbsp;·&nbsp; SPACE = TALK &nbsp;·&nbsp; T = TYPE</div>
   <div class="conn off" id="conn">LINK: OFFLINE</div>
-  <div class="gear" id="gear" title="Settings">&#x2699;</div>
-  <div class="powerbtn" id="powerbtn" title="Power down JARVIS">&#x23FB;</div>
+  <div class="winctrls">
+    <div class="wbtn" id="gear"     title="Settings">&#x2699;</div>
+    <div class="wbtn" id="minbtn"   title="Minimize">&#x2013;</div>
+    <div class="wbtn" id="maxbtn"   title="Maximize">&#x25A2;</div>
+    <div class="wbtn danger" id="powerbtn" title="Quit JARVIS">&#x2715;</div>
+  </div>
 
   <!-- typed-command bar -->
   <div class="cmdbar" id="cmdbar">
@@ -274,6 +278,14 @@
           <label>Clap loudness needed <span class="rangeval" id="csval">0.22</span></label>
           <input id="set_clapsens" type="range" min="0.08" max="0.6" step="0.02" value="0.22" />
         </div>
+      </div>
+
+      <div class="field" id="trayRow">
+        <label>Close button (&#x2715;)</label>
+        <select id="set_closetray">
+          <option value="false">Powers JARVIS down</option>
+          <option value="true">Hides to the system tray</option>
+        </select>
       </div>
 
       <div class="field">
@@ -944,6 +956,12 @@ function applyConfigToPanel(c){
   if('enable_voice' in c) $('set_envoice').value=String(!!c.enable_voice);
   if('enable_clap' in c || 'clap_count' in c) $('set_clap').value=(c.enable_clap===false)?'off':String(c.clap_count||2);
   if('clap_sensitivity' in c){ $('set_clapsens').value=c.clap_sensitivity; $('csval').textContent=Number($('set_clapsens').value).toFixed(2); }
+  if('close_to_tray' in c){ window.__closeToTray=!!c.close_to_tray; $('set_closetray').value=String(!!c.close_to_tray); }
+  if('enable_tray' in c){
+    $('trayRow').style.display = c.enable_tray ? '' : 'none';   // no tray → close always quits
+    if(!c.enable_tray) window.__closeToTray=false;
+    $('powerbtn').title = window.__closeToTray ? 'Hide to tray' : 'Quit JARVIS';
+  }
   if('user_title' in c) $('set_title').value=c.user_title||'';
   if(c.has_groq_key) $('set_groq_key').placeholder='key saved — leave blank to keep';
   toggleBrainFields();
@@ -972,6 +990,7 @@ function saveSettings(){
   const clapv=$('set_clap').value;
   cfg.enable_clap = clapv!=='off';
   if(clapv!=='off') cfg.clap_count = parseInt(clapv);
+  cfg.close_to_tray = $('set_closetray').value==='true';
   const gk=$('set_groq_key').value.trim(); if(gk) cfg.groq_api_key=gk;
   if(ws&&ws.readyState===1) ws.send(JSON.stringify({type:'set_config', config:cfg}));
   closeSettings();
@@ -992,11 +1011,22 @@ addEventListener('keydown',(e)=>{
   else if(e.key==='Escape'){ closeCmd(); closeSettings(); if(ws&&ws.readyState===1) ws.send(JSON.stringify({type:'stop'})); }
 });
 
-/* power-down button → tells Python to close the app */
-document.getElementById('powerbtn').addEventListener('click',()=>{
-  if(ws && ws.readyState===1) ws.send(JSON.stringify({type:'quit'}));
+/* ═══ window controls (minimize / maximize / close) ═════════════ */
+function wsend(o){ if(ws && ws.readyState===1) ws.send(JSON.stringify(o)); }
+$('minbtn').addEventListener('click', ()=> wsend({type:'win', action:'minimize'}));
+let winMax=false;
+$('maxbtn').addEventListener('click', ()=>{
+  winMax=!winMax;
+  $('maxbtn').innerHTML = winMax ? '&#x2750;' : '&#x25A2;';    // restore vs maximize glyph
+  $('maxbtn').title = winMax ? 'Restore' : 'Maximize';
+  wsend({type:'win', action:'toggle_max'});
+});
+/* close button → hide to tray if configured, otherwise power down */
+$('powerbtn').addEventListener('click',()=>{
+  if(window.__closeToTray){ wsend({type:'win', action:'hide'}); return; }
+  wsend({type:'quit'});
   setMode('offline');
-  document.getElementById('stateLabel').textContent='POWERING DOWN';
+  $('stateLabel').textContent='POWERING DOWN';
 });
 </script>
 </body>

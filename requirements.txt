@@ -18,6 +18,7 @@ pyttsx3==2.98            # offline SAPI5 fallback
 # HUD desktop window + bridge
 pywebview==5.4
 websockets==15.0.1
+pystray==0.19.5          # system-tray icon (persistent-app behaviour)
 
 # System powers
 psutil==7.0.0

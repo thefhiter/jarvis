@@ -26,6 +26,10 @@ answers out loud while a glowing arc-reactor HUD reacts to the conversation in r
   audio-reactive waveform, live subtitles, telemetry and a boot sequence. Pure canvas, no CDNs.
 - ⌨️ **Type instead of talk** — press **T** for a command bar and type anything; it runs
   through the same pipeline. Or go fully mic-free (keyboard-only mode).
+- 👏 **Clap to activate** — a single or double clap wakes JARVIS, alongside the wake word.
+- 🪟 **Runs like a real app** — proper window controls (**minimize / maximize / close**), an
+  arc-reactor **taskbar & tray icon**, and a **system-tray** menu (Show / Hide / Minimize /
+  Quit) so JARVIS can sit quietly in the background and keep listening.
 - ⚙️ **Live settings panel** — press the gear to switch the **brain** (Claude/Groq/Ollama),
   **speech model** (tiny→medium), **voice**, **wake sensitivity**, and how JARVIS addresses
   you — applied instantly and saved to `config.json`.

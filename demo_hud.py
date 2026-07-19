@@ -40,6 +40,7 @@ SAMPLE_CONFIG = {
     "tts_voice": "en-GB-RyanNeural", "wakeword_threshold": 0.5, "user_title": "sir",
     "enable_voice": True, "enable_wakeword": True,
     "enable_clap": True, "clap_count": 2, "clap_sensitivity": 0.22,
+    "enable_tray": True, "close_to_tray": False,
 }
 
 

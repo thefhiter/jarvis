@@ -32,6 +32,11 @@ class Assistant:
         self.ptt = threading.Event()       # push-to-talk trigger from the HUD
         self._turn_lock = threading.Lock()  # serialises voice/text turns
         self.on_quit = None                # set by run.py to close the window
+        # window-control hooks, wired to the pywebview window in run.py
+        self.on_minimize = None
+        self.on_toggle_max = None
+        self.on_show = None
+        self.on_hide = None
         hud.on_message = self._on_hud
 
     # ── HUD → assistant messages ────────────────────────────────
@@ -49,11 +54,27 @@ class Assistant:
             self._send_config()
         elif kind == "set_config":
             self._apply_config(msg.get("config") or {})
+        elif kind == "win":
+            self._on_win(msg.get("action"))
         elif kind == "quit":
             self.stop.set()
             self.mouth.interrupt()
             if self.on_quit:
                 self.on_quit()
+
+    # ── window controls (minimize / maximize / show / hide) ─────
+    def _on_win(self, action: str) -> None:
+        cb = {
+            "minimize": self.on_minimize,
+            "toggle_max": self.on_toggle_max,
+            "show": self.on_show,
+            "hide": self.on_hide,
+        }.get(action)
+        if cb:
+            try:
+                cb()
+            except Exception as e:
+                print(f"[assistant] window action '{action}' failed: {e}")
 
     # ── a single turn (voice or text) ───────────────────────────
     def _process(self, text: str) -> None:
@@ -100,6 +121,7 @@ class Assistant:
             "enable_wakeword": c.enable_wakeword,
             "enable_clap": c.enable_clap, "clap_count": c.clap_count,
             "clap_sensitivity": c.clap_sensitivity,
+            "enable_tray": c.enable_tray, "close_to_tray": c.close_to_tray,
         }})
 
     def _apply_config(self, d: dict) -> None:
@@ -140,6 +162,9 @@ class Assistant:
                 c.clap_sensitivity = max(0.08, min(0.6, float(d["clap_sensitivity"])))
             except (TypeError, ValueError):
                 pass
+        if "close_to_tray" in d:
+            # only honour hide-to-tray when a tray icon is actually available
+            c.close_to_tray = bool(d["close_to_tray"]) and c.enable_tray
         # heaviest change last: swap the speech-to-text model on a worker
         new_model = d.get("whisper_model")
         if new_model in WHISPER_SIZES and new_model != c.whisper_model:
