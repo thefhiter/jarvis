@@ -24,6 +24,11 @@ answers out loud while a glowing arc-reactor HUD reacts to the conversation in r
 - 🗣 **Voice** — premium neural **edge-tts** (`en-GB-RyanNeural`) with an offline **SAPI5** fallback.
 - 🌀 **HUD** — a frameless, always-on-top holographic arc reactor: rotating rings, an
   audio-reactive waveform, live subtitles, telemetry and a boot sequence. Pure canvas, no CDNs.
+- ⌨️ **Type instead of talk** — press **T** for a command bar and type anything; it runs
+  through the same pipeline. Or go fully mic-free (keyboard-only mode).
+- ⚙️ **Live settings panel** — press the gear to switch the **brain** (Claude/Groq/Ollama),
+  **speech model** (tiny→medium), **voice**, **wake sensitivity**, and how JARVIS addresses
+  you — applied instantly and saved to `config.json`.
 - ⚡ **Powers** — open apps & sites, web/YouTube search, volume, brightness, screenshots,
   system & battery status, notes, timers, weather, clipboard, typing, window control,
   lock/sleep/shutdown, and an agentic “run a task” mode that dispatches to Claude Code.
@@ -65,6 +70,9 @@ start.bat
 
 Then just say **“Hey Jarvis”**. `start-debug.bat` runs the same thing with a visible
 console if you want to watch the logs.
+
+**Controls:** say “Hey Jarvis” · click the core or press **Space** to talk · press **T** to
+type · press the **⚙ gear** for settings · **Esc** to stop/close · **⏻** to power down.
 
 > Already set up on this machine — the `.venv` and models are in place, so you can run
 > `start.bat` directly. To preview just the HUD (no mic), run

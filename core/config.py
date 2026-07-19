@@ -32,6 +32,7 @@ class Config:
     ollama_url: str = "http://localhost:11434"
 
     # ── voice input ─────────────────────────────────────────────
+    enable_voice: bool = True          # False = keyboard-only (mic never opened)
     whisper_model: str = "base"        # tiny | base | small | medium
     whisper_compute: str = "int8"
     input_device: int | None = None    # None = system default mic

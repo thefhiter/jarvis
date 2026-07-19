@@ -31,12 +31,26 @@ class Ears:
             self.cfg.whisper_model, device="cpu", compute_type=self.cfg.whisper_compute
         )
         if self.cfg.enable_wakeword:
-            try:
-                from openwakeword.model import Model as OWW
-                self._oww = OWW(wakeword_models=[self.cfg.wakeword], inference_framework="onnx")
-            except Exception as e:
-                print(f"[ears] wake-word disabled ({e}); using click/hotkey to talk")
-                self._oww = None
+            self._load_wake()
+
+    def reload_whisper(self, model_name: str) -> bool:
+        """Swap the STT model at runtime (downloads it on first use). Returns ok."""
+        from faster_whisper import WhisperModel
+        try:
+            self._model = WhisperModel(model_name, device="cpu", compute_type=self.cfg.whisper_compute)
+            self.cfg.whisper_model = model_name
+            return True
+        except Exception as e:
+            print(f"[ears] could not load whisper '{model_name}': {e}")
+            return False
+
+    def _load_wake(self) -> None:
+        try:
+            from openwakeword.model import Model as OWW
+            self._oww = OWW(wakeword_models=[self.cfg.wakeword], inference_framework="onnx")
+        except Exception as e:
+            print(f"[ears] wake-word disabled ({e}); using click/hotkey to talk")
+            self._oww = None
 
     def open_stream(self) -> None:
         self._stream = sd.InputStream(

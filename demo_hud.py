@@ -34,8 +34,30 @@ def fake_spectrum(t, energy):
     return bins
 
 
+SAMPLE_CONFIG = {
+    "brain": "claude", "groq_model": "llama-3.3-70b-versatile", "ollama_model": "llama3.2",
+    "has_groq_key": False, "whisper_model": "base", "tts_engine": "edge",
+    "tts_voice": "en-GB-RyanNeural", "wakeword_threshold": 0.5, "user_title": "sir",
+    "enable_voice": True, "enable_wakeword": True,
+}
+
+
 def main():
     hud = Hud()
+
+    def on_msg(m):
+        t = m.get("type")
+        if t == "get_config":
+            hud.send({"type": "config", "config": SAMPLE_CONFIG})
+        elif t == "set_config":
+            SAMPLE_CONFIG.update(m.get("config") or {})
+            hud.send({"type": "config", "config": SAMPLE_CONFIG})
+            hud.jarvis("Configuration updated (demo).")
+        elif t == "text_command":
+            hud.state("thinking")
+            hud.jarvis(f"You typed: {m.get('text','')}. (Preview mode — no real brain.)")
+    hud.on_message = on_msg
+
     hud.start()
     serve_ui()
     url = f"http://127.0.0.1:{WEB_PORT}/jarvis.html"

@@ -92,7 +92,59 @@
            font-size:14px; transition:all .2s; background:rgba(255,74,74,.06); }
   .powerbtn:hover{ background:rgba(255,74,74,.2); box-shadow:0 0 14px rgba(var(--danger),.6); color:#fff; }
 
-  @media (prefers-reduced-motion: reduce){ .dot,.subs .jarvis .cursor{ animation:none } }
+  .gear{ position:absolute; top:24px; right:64px; z-index:8; pointer-events:auto; cursor:pointer;
+           width:26px; height:26px; border-radius:50%; border:1.5px solid rgba(var(--accent),.5);
+           color:rgba(var(--accent),.85); display:flex; align-items:center; justify-content:center;
+           font-size:15px; transition:all .2s; background:rgba(56,225,255,.06); }
+  .gear:hover{ background:rgba(56,225,255,.18); box-shadow:0 0 14px rgba(var(--accent),.6); color:#fff; transform:rotate(45deg); }
+
+  /* ── text command bar ── */
+  .cmdbar{ position:absolute; left:50%; transform:translateX(-50%) translateY(20px); bottom:14px;
+           width:min(70vw,720px); z-index:9; pointer-events:auto; opacity:0; transition:opacity .25s, transform .25s;
+           display:flex; align-items:center; gap:10px; padding:10px 16px;
+           background:rgba(4,14,24,.82); border:1px solid rgba(var(--accent),.4);
+           border-radius:10px; box-shadow:0 0 26px rgba(var(--accent),.22), inset 0 0 20px rgba(var(--accent),.06);
+           backdrop-filter:blur(6px); }
+  .cmdbar.show{ opacity:1; transform:translateX(-50%) translateY(0); }
+  .cmdbar .chev{ font-family:var(--mono); color:rgba(var(--accent2),.9); font-size:16px; }
+  .cmdbar input{ flex:1; background:transparent; border:none; outline:none; color:#e8fbff;
+           font-family:var(--sans); font-size:17px; letter-spacing:.01em; }
+  .cmdbar input::placeholder{ color:rgba(var(--accent),.45); }
+  .cmdbar .send{ font-family:var(--mono); font-size:10px; letter-spacing:.18em; text-transform:uppercase;
+           color:rgba(var(--accent),.6); cursor:pointer; padding:4px 8px; border:1px solid rgba(var(--accent),.35); border-radius:6px; }
+  .cmdbar .send:hover{ color:#fff; background:rgba(56,225,255,.15); }
+
+  /* ── settings panel ── */
+  .settings{ position:fixed; inset:0; z-index:15; display:none; align-items:center; justify-content:center;
+           background:rgba(1,4,10,.72); backdrop-filter:blur(4px); pointer-events:auto; }
+  .settings.show{ display:flex; }
+  .panel{ width:min(92vw,560px); max-height:88vh; overflow-y:auto; padding:26px 30px;
+           background:linear-gradient(180deg, rgba(6,18,30,.96), rgba(3,10,18,.98));
+           border:1px solid rgba(var(--accent),.45); border-radius:14px;
+           box-shadow:0 0 50px rgba(var(--accent),.25), inset 0 0 40px rgba(var(--accent),.05); }
+  .panel h2{ font-family:var(--mono); font-size:15px; letter-spacing:.34em; text-transform:uppercase;
+           color:rgba(var(--accent2),.95); text-shadow:0 0 12px rgba(var(--accent),.5); margin-bottom:4px; }
+  .panel .sub{ font-family:var(--mono); font-size:10px; letter-spacing:.14em; color:rgba(var(--accent),.5); margin-bottom:20px; }
+  .field{ margin-bottom:16px; }
+  .field label{ display:block; font-family:var(--mono); font-size:10.5px; letter-spacing:.16em; text-transform:uppercase;
+           color:rgba(var(--accent),.72); margin-bottom:7px; }
+  .field select,.field input[type=text],.field input[type=password]{
+           width:100%; padding:9px 12px; background:rgba(2,8,14,.9); color:#dff6ff;
+           border:1px solid rgba(var(--accent),.32); border-radius:8px; font-family:var(--sans); font-size:14px; outline:none; }
+  .field select:focus,.field input:focus{ border-color:rgba(var(--accent),.75); box-shadow:0 0 12px rgba(var(--accent),.3); }
+  .field input[type=range]{ width:100%; accent-color:rgb(var(--accent)); }
+  .field .rangeval{ font-family:var(--mono); font-size:11px; color:rgba(var(--accent2),.9); float:right; }
+  .row2{ display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  .panel .actions{ display:flex; gap:12px; margin-top:24px; }
+  .panel .btn{ flex:1; padding:11px; text-align:center; font-family:var(--mono); font-size:12px; letter-spacing:.2em;
+           text-transform:uppercase; cursor:pointer; border-radius:9px; transition:all .2s; }
+  .panel .btn.save{ background:rgba(56,225,255,.16); color:#eafcff; border:1px solid rgba(var(--accent),.6); }
+  .panel .btn.save:hover{ background:rgba(56,225,255,.32); box-shadow:0 0 18px rgba(var(--accent),.5); }
+  .panel .btn.cancel{ background:transparent; color:rgba(var(--accent),.6); border:1px solid rgba(var(--accent),.28); }
+  .panel .btn.cancel:hover{ color:#fff; }
+  .hide-field{ display:none !important; }
+
+  @media (prefers-reduced-motion: reduce){ .dot,.subs .jarvis .cursor{ animation:none } .gear:hover{ transform:none } }
 </style>
 </head>
 <body>
@@ -124,9 +176,102 @@
     <div class="jarvis" id="jarvisLine"></div>
   </div>
 
-  <div class="hint" id="hint">CLICK CORE / SPACE = TALK &nbsp;·&nbsp; SAY “HEY JARVIS”</div>
+  <div class="hint" id="hint">SPACE = TALK &nbsp;·&nbsp; T = TYPE &nbsp;·&nbsp; SAY “HEY JARVIS”</div>
   <div class="conn off" id="conn">LINK: OFFLINE</div>
+  <div class="gear" id="gear" title="Settings">&#x2699;</div>
   <div class="powerbtn" id="powerbtn" title="Power down JARVIS">&#x23FB;</div>
+
+  <!-- typed-command bar -->
+  <div class="cmdbar" id="cmdbar">
+    <span class="chev">❯</span>
+    <input id="cmdinput" type="text" autocomplete="off" spellcheck="false"
+           placeholder="Type a command for JARVIS…  (Enter to send · Esc to close)" />
+    <span class="send" id="cmdsend">Send</span>
+  </div>
+
+  <!-- settings panel -->
+  <div class="settings" id="settings">
+    <div class="panel">
+      <h2>System Configuration</h2>
+      <div class="sub">MODELS · VOICE · INPUT</div>
+
+      <div class="field">
+        <label>Brain (AI model)</label>
+        <select id="set_brain">
+          <option value="claude">Claude — your subscription (best)</option>
+          <option value="groq">Groq — free API (llama-3.3-70b)</option>
+          <option value="ollama">Ollama — local, offline</option>
+        </select>
+      </div>
+      <div class="field hide-field" id="f_groq">
+        <label>Groq API key</label>
+        <input id="set_groq_key" type="password" placeholder="paste free key from console.groq.com" />
+      </div>
+      <div class="field hide-field" id="f_ollama">
+        <label>Ollama model name</label>
+        <input id="set_ollama_model" type="text" placeholder="llama3.2" />
+      </div>
+
+      <div class="row2">
+        <div class="field">
+          <label>Speech-to-text model</label>
+          <select id="set_whisper">
+            <option value="tiny">Tiny — fastest</option>
+            <option value="base">Base — balanced</option>
+            <option value="small">Small — accurate</option>
+            <option value="medium">Medium — best (slow)</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Voice engine</label>
+          <select id="set_engine">
+            <option value="edge">Edge — neural (online)</option>
+            <option value="sapi">Windows — offline</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>Voice</label>
+        <select id="set_voice">
+          <option value="en-GB-RyanNeural">Ryan — British male (default)</option>
+          <option value="en-GB-ThomasNeural">Thomas — British male</option>
+          <option value="en-GB-SoniaNeural">Sonia — British female</option>
+          <option value="en-US-GuyNeural">Guy — US male</option>
+          <option value="en-US-ChristopherNeural">Christopher — US male (deep)</option>
+          <option value="en-US-EricNeural">Eric — US male</option>
+          <option value="en-US-AriaNeural">Aria — US female</option>
+          <option value="en-US-JennyNeural">Jenny — US female</option>
+          <option value="en-AU-WilliamNeural">William — Australian male</option>
+          <option value="en-IN-PrabhatNeural">Prabhat — Indian male</option>
+        </select>
+      </div>
+
+      <div class="row2">
+        <div class="field">
+          <label>Wake sensitivity <span class="rangeval" id="wsval">0.50</span></label>
+          <input id="set_wake" type="range" min="0.2" max="0.8" step="0.05" value="0.5" />
+        </div>
+        <div class="field">
+          <label>Voice input</label>
+          <select id="set_envoice">
+            <option value="true">On — microphone</option>
+            <option value="false">Off — keyboard only</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>Address me as</label>
+        <input id="set_title" type="text" placeholder="sir" />
+      </div>
+
+      <div class="actions">
+        <div class="btn cancel" id="set_cancel">Cancel</div>
+        <div class="btn save" id="set_save">Apply</div>
+      </div>
+    </div>
+  </div>
 
   <div id="boot">
     <div class="title" id="bootTitle">J.A.R.V.I.S.</div>
@@ -473,7 +618,7 @@ runBoot();
 let ws=null, reconnectT=null;
 function connect(){
   try{ ws=new WebSocket('ws://127.0.0.1:8765'); }catch(e){ scheduleReconnect(); return; }
-  ws.onopen=()=>{ setConn(true); };
+  ws.onopen=()=>{ setConn(true); try{ ws.send(JSON.stringify({type:'get_config'})); }catch(_){} };
   ws.onclose=()=>{ setConn(false); scheduleReconnect(); };
   ws.onerror=()=>{ try{ws.close();}catch(_){} };
   ws.onmessage=(ev)=>{ try{ handle(JSON.parse(ev.data)); }catch(e){} };
@@ -503,6 +648,7 @@ function handle(m){
     case 'telemetry': setTelem(m.cpu, m.mem); break;
     case 'brain': document.getElementById('brainVal').textContent='BRAIN: '+(m.name||'----').toUpperCase(); break;
     case 'status': document.getElementById('online').textContent=(m.text||'SYSTEM ONLINE').toUpperCase(); break;
+    case 'config': applyConfigToPanel(m.config||{}); break;
     case 'boot_done': finishBoot(); break;
   }
 }
@@ -516,10 +662,77 @@ canvas.addEventListener('click',(e)=>{
     setMode('listening');
   }
 });
-/* keyboard: space = talk, esc = stop */
+const $=(id)=>document.getElementById(id);
+function isTyping(){ const a=document.activeElement; return a && (a.tagName==='INPUT'||a.tagName==='SELECT'||a.tagName==='TEXTAREA'); }
+
+/* ═══ command bar (keyboard input) ═══════════════════════════ */
+const cmdbar=$('cmdbar'), cmdinput=$('cmdinput');
+function openCmd(){ cmdbar.classList.add('show'); setTimeout(()=>cmdinput.focus(),30); }
+function closeCmd(){ cmdbar.classList.remove('show'); cmdinput.blur(); cmdinput.value=''; }
+function sendCmd(){
+  const t=cmdinput.value.trim(); if(!t) return;
+  if(ws && ws.readyState===1) ws.send(JSON.stringify({type:'text_command', text:t}));
+  showUser(t); closeCmd();
+}
+$('cmdsend').addEventListener('click', sendCmd);
+cmdinput.addEventListener('keydown',(e)=>{
+  e.stopPropagation();
+  if(e.key==='Enter'){ e.preventDefault(); sendCmd(); }
+  else if(e.key==='Escape'){ e.preventDefault(); closeCmd(); }
+});
+
+/* ═══ settings panel ═════════════════════════════════════════ */
+const settings=$('settings');
+function applyConfigToPanel(c){
+  c=c||{};
+  if('brain' in c) $('set_brain').value=c.brain;
+  if('ollama_model' in c) $('set_ollama_model').value=c.ollama_model||'';
+  if('whisper_model' in c) $('set_whisper').value=c.whisper_model;
+  if('tts_engine' in c) $('set_engine').value=c.tts_engine;
+  if('tts_voice' in c) setSelectValue($('set_voice'), c.tts_voice);
+  if('wakeword_threshold' in c){ $('set_wake').value=c.wakeword_threshold; $('wsval').textContent=Number(c.wakeword_threshold).toFixed(2); }
+  if('enable_voice' in c) $('set_envoice').value=String(!!c.enable_voice);
+  if('user_title' in c) $('set_title').value=c.user_title||'';
+  if(c.has_groq_key) $('set_groq_key').placeholder='key saved — leave blank to keep';
+  toggleBrainFields();
+}
+function setSelectValue(sel,val){
+  if(![...sel.options].some(o=>o.value===val) && val){
+    const o=document.createElement('option'); o.value=val; o.textContent=val+' (custom)'; sel.appendChild(o);
+  }
+  sel.value=val;
+}
+function toggleBrainFields(){
+  const b=$('set_brain').value;
+  $('f_groq').classList.toggle('hide-field', b!=='groq');
+  $('f_ollama').classList.toggle('hide-field', b!=='ollama');
+}
+function openSettings(){ if(ws&&ws.readyState===1) ws.send(JSON.stringify({type:'get_config'})); settings.classList.add('show'); }
+function closeSettings(){ settings.classList.remove('show'); }
+function saveSettings(){
+  const cfg={
+    brain:$('set_brain').value, ollama_model:$('set_ollama_model').value.trim(),
+    whisper_model:$('set_whisper').value, tts_engine:$('set_engine').value,
+    tts_voice:$('set_voice').value, wakeword_threshold:parseFloat($('set_wake').value),
+    enable_voice:$('set_envoice').value==='true', user_title:$('set_title').value.trim()||'sir',
+  };
+  const gk=$('set_groq_key').value.trim(); if(gk) cfg.groq_api_key=gk;
+  if(ws&&ws.readyState===1) ws.send(JSON.stringify({type:'set_config', config:cfg}));
+  closeSettings();
+}
+$('gear').addEventListener('click', openSettings);
+$('set_brain').addEventListener('change', toggleBrainFields);
+$('set_wake').addEventListener('input', ()=>{ $('wsval').textContent=Number($('set_wake').value).toFixed(2); });
+$('set_cancel').addEventListener('click', closeSettings);
+$('set_save').addEventListener('click', saveSettings);
+settings.addEventListener('click',(e)=>{ if(e.target===settings) closeSettings(); });
+
+/* ═══ global keys ════════════════════════════════════════════ */
 addEventListener('keydown',(e)=>{
+  if(isTyping()){ if(e.key==='Escape') closeSettings(); return; }
   if(e.code==='Space'){ e.preventDefault(); if(ws&&ws.readyState===1) ws.send(JSON.stringify({type:'push_to_talk'})); }
-  if(e.code==='Escape'){ if(ws&&ws.readyState===1) ws.send(JSON.stringify({type:'stop'})); }
+  else if(e.key==='t'||e.key==='T'||e.key==='/'){ e.preventDefault(); openCmd(); }
+  else if(e.key==='Escape'){ closeCmd(); closeSettings(); if(ws&&ws.readyState===1) ws.send(JSON.stringify({type:'stop'})); }
 });
 
 /* power-down button → tells Python to close the app */
