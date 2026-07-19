@@ -15,11 +15,16 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import requests
 
 ROOT = Path(__file__).resolve().parent.parent
+
+# phrases that mean "the model is temporarily unavailable / throttled", not a real answer
+RATE_HINTS = ("usage limit", "rate limit", "session limit", "limit reached", "quota",
+              "overloaded", "resets", "too many requests", "429", "try again later")
 
 SYSTEM = (
     "You are JARVIS, a witty, hyper-competent AI butler modelled on the assistant "
@@ -37,24 +42,45 @@ class Brain:
         self.history: list[tuple[str, str]] = []
         self.active = cfg.brain
         self._system = SYSTEM.format(title=cfg.user_title)
+        # run the CLI from an empty scratch dir so it does NOT load the project's
+        # CLAUDE.md / memory on every question (that tripled cost + latency)
+        self._cwd = Path(tempfile.gettempdir()) / "jarvis_brain"
+        try:
+            self._cwd.mkdir(exist_ok=True)
+        except Exception:
+            self._cwd = ROOT
 
     # ── public ──────────────────────────────────────────────────
     def ask(self, prompt: str) -> str:
         chain = [self.cfg.brain] + [b for b in ("claude", "groq", "ollama") if b != self.cfg.brain]
-        last_err = None
+        errors: dict[str, str] = {}
         for engine in chain:
             try:
                 fn = getattr(self, f"_ask_{engine}")
-                reply = fn(prompt).strip()
+                reply = (fn(prompt) or "").strip()
                 if reply:
                     self.active = engine
                     self._remember(prompt, reply)
                     return reply
+                errors[engine] = "empty reply"
             except Exception as e:  # try next engine
-                last_err = e
+                errors[engine] = str(e)
+                print(f"[brain] {engine} unavailable: {e}")
                 continue
-        return (f"My apologies, {self.cfg.user_title}. My cognitive uplink is "
-                f"offline at the moment.")
+        return self._fallback_message(errors)
+
+    def _fallback_message(self, errors: dict[str, str]) -> str:
+        """Pick the most helpful spoken message for why every engine failed."""
+        title = self.cfg.user_title
+        blob = " ".join(errors.values()).lower()
+        if any(h in blob for h in RATE_HINTS):
+            return (f"My uplink to Claude has hit its usage limit, {title}. It resets "
+                    f"shortly — or add a free Groq key in settings and I'll switch over instantly.")
+        if any(s in blob for s in ("not found", "winerror 2", "no such file", "cannot find")):
+            return (f"I can't find the Claude command, {title}. Make sure Claude Code is "
+                    f"installed and on your PATH, or set a Groq key in settings.")
+        return (f"My cognitive uplink is offline at the moment, {title}. No model is reachable — "
+                f"add a free Groq key or start Ollama in settings and I'll be right back.")
 
     # ── memory ──────────────────────────────────────────────────
     def _remember(self, user: str, reply: str) -> None:
@@ -73,23 +99,34 @@ class Brain:
 
     # ── back-ends ───────────────────────────────────────────────
     def _ask_claude(self, prompt: str) -> str:
-        cmd = [self.claude, "-p", "--output-format", "json"]
+        # --strict-mcp-config (with no --mcp-config) loads zero MCP servers → lean, cheap call
+        cmd = [self.claude, "-p", "--output-format", "json", "--strict-mcp-config"]
         if self.cfg.claude_model:
             cmd += ["--model", self.cfg.claude_model]
         cmd += ["--append-system-prompt", self._system]
         cmd += [self._context() + prompt]
-        proc = subprocess.run(
-            cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=90, cwd=str(ROOT),
-        )
+        try:
+            proc = subprocess.run(
+                cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=90, cwd=str(self._cwd),
+            )
+        except FileNotFoundError as e:
+            raise RuntimeError(f"claude command not found ({e})")
         out = (proc.stdout or "").strip()
+        err = (proc.stderr or "").strip()
         if not out:
-            raise RuntimeError(f"claude returned nothing (stderr: {proc.stderr[:200]})")
+            raise RuntimeError(f"claude exited {proc.returncode}, no output (stderr: {err[:200]})")
         try:
             data = json.loads(out)
-            return data.get("result") or data.get("response") or ""
         except json.JSONDecodeError:
-            return out  # plain-text fallback
+            low = out.lower()
+            if any(h in low for h in RATE_HINTS) or low.startswith(("error", "usage")):
+                raise RuntimeError(f"claude error output: {out[:200]}")
+            return out  # genuine plain-text answer
+        if data.get("is_error") or data.get("subtype", "").startswith("error"):
+            detail = data.get("result") or data.get("error") or err or "unknown error"
+            raise RuntimeError(f"claude reported an error: {str(detail)[:200]}")
+        return data.get("result") or data.get("response") or ""
 
     def _ask_groq(self, prompt: str) -> str:
         if not self.cfg.groq_api_key:
