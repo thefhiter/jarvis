@@ -1,0 +1,35 @@
+# ── JARVIS dependency stack (Windows 11 / Python 3.11) ───────────────────
+# Audio I/O
+sounddevice==0.5.2
+numpy==2.2.6
+scipy==1.15.3
+
+# Speech-to-text (local, free)
+faster-whisper==1.1.1
+
+# Wake word "hey jarvis" (local, free, no key)
+openwakeword==0.6.0
+onnxruntime==1.22.0
+
+# Text-to-speech
+edge-tts==7.2.8          # premium neural voice (online, free)
+pyttsx3==2.98            # offline SAPI5 fallback
+
+# HUD desktop window + bridge
+pywebview==5.4
+websockets==15.0.1
+
+# System powers
+psutil==7.0.0
+pycaw==20240210          # volume control
+comtypes==1.4.10
+screen-brightness-control==0.24.1
+pyautogui==0.9.54        # typing / hotkeys / screenshots
+pyperclip==1.9.0
+Pillow==11.2.1
+
+# Brain fallbacks / web
+requests==2.32.3
+
+# Use the Windows OS certificate store (fixes TLS interception by AV/proxy)
+truststore==0.10.4

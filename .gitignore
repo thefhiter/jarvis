@@ -1,0 +1,21 @@
+# virtual environment
+.venv/
+
+# python
+__pycache__/
+*.pyc
+*.pyo
+
+# runtime / user data
+logs/
+notes.txt
+# config.json may contain a Groq key — ship config.example.json instead
+config.json
+# agentic task scratch space
+workspace/
+assets/screenshots/
+
+# model caches (downloaded on first run)
+models/
+*.onnx
+*.tflite

@@ -1,0 +1,533 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>J.A.R.V.I.S.</title>
+<style>
+  :root{
+    /* state-driven accent — updated by JS */
+    --accent: 56, 225, 255;      /* cyan */
+    --accent2: 120, 240, 255;
+    --gold: 255, 186, 64;
+    --danger: 255, 74, 74;
+    --bg: #02060b;
+    --mono: "Cascadia Mono","Consolas","JetBrains Mono",ui-monospace,monospace;
+    --sans: "Inter","Segoe UI",system-ui,-apple-system,sans-serif;
+  }
+  *{ box-sizing:border-box; margin:0; padding:0; }
+  html,body{ width:100%; height:100%; overflow:hidden; background:var(--bg); color:#cde9f2; font-family:var(--sans); cursor:default; user-select:none; }
+  #stage{ position:fixed; inset:0; }
+  canvas{ position:absolute; inset:0; width:100%; height:100%; display:block; }
+
+  /* ── HUD chrome overlay ── */
+  .chrome{ position:fixed; inset:0; pointer-events:none; z-index:5; }
+  .corner{ position:absolute; width:64px; height:64px; opacity:.55;
+           border-color:rgba(var(--accent),.5); }
+  .corner::before,.corner::after{ content:""; position:absolute; background:rgba(var(--accent),.6);
+           box-shadow:0 0 8px rgba(var(--accent),.6); }
+  .corner::before{ width:100%; height:2px; }
+  .corner::after{ width:2px; height:100%; }
+  .tl{ top:22px; left:22px } .tr{ top:22px; right:22px } .bl{ bottom:22px; left:22px } .br{ bottom:22px; right:22px }
+  .tr::before,.tr::after{ right:0 } .bl::before{ bottom:0 } .bl::after{ bottom:0 } .br::before{ bottom:0; right:0 } .br::after{ bottom:0; right:0 }
+
+  .topbar{ position:absolute; top:26px; left:0; right:0; display:flex; justify-content:center; gap:14px;
+           font-family:var(--mono); font-size:12px; letter-spacing:.42em; text-transform:uppercase;
+           color:rgba(var(--accent),.85); text-shadow:0 0 10px rgba(var(--accent),.5); }
+  .topbar .dot{ width:7px;height:7px;border-radius:50%;background:rgb(var(--accent));align-self:center;
+           box-shadow:0 0 10px rgb(var(--accent)); animation:blink 2.4s infinite; }
+  @keyframes blink{ 0%,100%{opacity:1} 50%{opacity:.25} }
+
+  .telemetry{ position:absolute; top:70px; left:32px; font-family:var(--mono); font-size:11px; line-height:1.9;
+           color:rgba(var(--accent),.62); letter-spacing:.08em; }
+  .telemetry b{ color:rgba(var(--accent2),.95); font-weight:600; }
+  .telemetry .bar{ display:inline-block; width:80px; height:6px; margin-left:6px; vertical-align:middle;
+           background:rgba(var(--accent),.15); border:1px solid rgba(var(--accent),.3); position:relative; }
+  .telemetry .bar i{ position:absolute; inset:0; width:0%; background:rgba(var(--accent),.7);
+           box-shadow:0 0 8px rgba(var(--accent),.6); transition:width .5s ease; }
+
+  .clock{ position:absolute; top:70px; right:32px; text-align:right; font-family:var(--mono);
+           font-size:11px; line-height:1.9; color:rgba(var(--accent),.62); letter-spacing:.08em; }
+  .clock .big{ font-size:22px; color:rgba(var(--accent2),.95); letter-spacing:.14em; text-shadow:0 0 12px rgba(var(--accent),.4); }
+
+  /* ── state label under reactor ── */
+  .statelabel{ position:absolute; left:0; right:0; bottom:128px; text-align:center;
+           font-family:var(--mono); font-size:13px; letter-spacing:.5em; text-transform:uppercase;
+           color:rgba(var(--accent2),.95); text-shadow:0 0 16px rgba(var(--accent),.8); transition:color .4s, opacity .4s; }
+
+  /* ── subtitle / transcript ── */
+  .subs{ position:absolute; left:50%; transform:translateX(-50%); bottom:48px; width:min(76vw,900px);
+           text-align:center; z-index:6; }
+  .subs .user{ font-family:var(--mono); font-size:14px; letter-spacing:.05em; color:rgba(var(--accent),.7);
+           margin-bottom:10px; min-height:18px; opacity:0; transition:opacity .3s; }
+  .subs .user.show{ opacity:.85; }
+  .subs .user::before{ content:"❯ "; color:rgba(var(--accent2),.9); }
+  .subs .jarvis{ font-family:var(--sans); font-size:23px; font-weight:500; line-height:1.5;
+           color:#e8fbff; text-shadow:0 0 22px rgba(var(--accent),.35); min-height:34px; }
+  .subs .jarvis .cursor{ display:inline-block; width:9px; height:20px; margin-left:3px; vertical-align:middle;
+           background:rgb(var(--accent2)); box-shadow:0 0 12px rgb(var(--accent)); animation:blink 1s steps(1) infinite; }
+
+  /* ── boot overlay ── */
+  #boot{ position:fixed; inset:0; z-index:20; background:#01040a; display:flex; flex-direction:column;
+           justify-content:center; align-items:center; gap:2px; font-family:var(--mono); font-size:13px;
+           letter-spacing:.14em; color:rgba(var(--accent),.9); transition:opacity 1.2s ease; }
+  #boot .line{ opacity:0; }
+  #boot .line b{ color:rgb(var(--accent2)); }
+  #boot .line .ok{ color:#38ff9b; }
+  #boot.hide{ opacity:0; pointer-events:none; }
+  #boot .title{ font-family:var(--sans); font-weight:700; font-size:52px; letter-spacing:.34em;
+           color:#eafcff; text-shadow:0 0 30px rgba(var(--accent),.7); margin-bottom:24px; opacity:0; }
+
+  /* connection pill */
+  .conn{ position:absolute; bottom:26px; right:32px; font-family:var(--mono); font-size:10px; letter-spacing:.24em;
+           text-transform:uppercase; color:rgba(var(--accent),.5); z-index:6; }
+  .conn.off{ color:rgba(var(--danger),.85); }
+
+  .hint{ position:absolute; bottom:26px; left:32px; font-family:var(--mono); font-size:10px; letter-spacing:.2em;
+           text-transform:uppercase; color:rgba(var(--accent),.4); z-index:6; }
+
+  .powerbtn{ position:absolute; top:24px; right:30px; z-index:8; pointer-events:auto; cursor:pointer;
+           width:26px; height:26px; border-radius:50%; border:1.5px solid rgba(var(--danger),.5);
+           color:rgba(var(--danger),.8); display:flex; align-items:center; justify-content:center;
+           font-size:14px; transition:all .2s; background:rgba(255,74,74,.06); }
+  .powerbtn:hover{ background:rgba(255,74,74,.2); box-shadow:0 0 14px rgba(var(--danger),.6); color:#fff; }
+
+  @media (prefers-reduced-motion: reduce){ .dot,.subs .jarvis .cursor{ animation:none } }
+</style>
+</head>
+<body>
+  <div id="stage"><canvas id="c"></canvas></div>
+
+  <div class="chrome">
+    <div class="corner tl"></div><div class="corner tr"></div>
+    <div class="corner bl"></div><div class="corner br"></div>
+    <div class="topbar"><span class="dot"></span><span id="brand">J . A . R . V . I . S .</span><span id="online">SYSTEM ONLINE</span></div>
+
+    <div class="telemetry" id="telemetry">
+      <div>CPU <span class="bar"><i id="cpuBar"></i></span> <b id="cpuVal">--</b></div>
+      <div>MEM <span class="bar"><i id="memBar"></i></span> <b id="memVal">--</b></div>
+      <div>NET <b id="netVal">SECURE</b></div>
+      <div>PWR <b id="pwrVal">ARC-REACTOR</b></div>
+    </div>
+
+    <div class="clock">
+      <div class="big" id="clockTime">--:--</div>
+      <div id="clockDate">------</div>
+      <div id="brainVal" style="margin-top:8px">BRAIN: ----</div>
+    </div>
+
+    <div class="statelabel" id="stateLabel">STANDBY</div>
+  </div>
+
+  <div class="subs">
+    <div class="user" id="userLine"></div>
+    <div class="jarvis" id="jarvisLine"></div>
+  </div>
+
+  <div class="hint" id="hint">CLICK CORE / SPACE = TALK &nbsp;·&nbsp; SAY “HEY JARVIS”</div>
+  <div class="conn off" id="conn">LINK: OFFLINE</div>
+  <div class="powerbtn" id="powerbtn" title="Power down JARVIS">&#x23FB;</div>
+
+  <div id="boot">
+    <div class="title" id="bootTitle">J.A.R.V.I.S.</div>
+    <div id="bootLines"></div>
+  </div>
+
+<script>
+"use strict";
+/* ═══════════════════════════════════════════════════════════════════════
+   J.A.R.V.I.S. HUD  —  pure canvas arc-reactor, audio-reactive, no CDNs
+   Driven over WebSocket by the Python core (ws://127.0.0.1:8765).
+   ═══════════════════════════════════════════════════════════════════════ */
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let W=0,H=0,CX=0,CY=0,DPR=1;
+function resize(){
+  DPR = Math.min(window.devicePixelRatio||1, 2);
+  W = canvas.width  = Math.floor(innerWidth  * DPR);
+  H = canvas.height = Math.floor(innerHeight * DPR);
+  canvas.style.width = innerWidth+'px'; canvas.style.height = innerHeight+'px';
+  CX = W/2; CY = H/2;
+}
+addEventListener('resize', resize); resize();
+
+/* ── palette per state ─────────────────────────────────────────── */
+const PALETTE = {
+  idle:      { a:[56,225,255],  b:[120,240,255], label:'STANDBY',    spin:1.0 },
+  listening: { a:[56,225,255],  b:[150,255,255], label:'LISTENING',  spin:1.5 },
+  thinking:  { a:[255,186,64],  b:[255,220,130], label:'PROCESSING', spin:2.6 },
+  speaking:  { a:[80,235,255],  b:[190,250,255], label:'SPEAKING',   spin:1.8 },
+  error:     { a:[255,74,74],   b:[255,150,150], label:'FAULT',      spin:2.0 },
+  offline:   { a:[90,120,140],  b:[130,160,180], label:'OFFLINE',    spin:0.4 },
+};
+
+const S = {
+  mode:'idle',
+  level:0, levelTarget:0,          // 0..1 audio amplitude (smoothed)
+  spectrum:new Array(64).fill(0),  // 0..1 per bin (smoothed)
+  spectrumTarget:new Array(64).fill(0),
+  col:{ a:[56,225,255], b:[120,240,255] }, // current (lerped) colors
+  colTarget:{ a:[56,225,255], b:[120,240,255] },
+  spin:1.0, spinTarget:1.0,
+  t:0,
+  ignite:0,        // 0..1 reactor power-on
+};
+
+function setMode(m){
+  if(!PALETTE[m]) m='idle';
+  S.mode=m;
+  const p=PALETTE[m];
+  S.colTarget={a:p.a.slice(),b:p.b.slice()};
+  S.spinTarget=p.spin;
+  const el=document.getElementById('stateLabel');
+  el.textContent=p.label;
+  document.documentElement.style.setProperty('--accent', p.a.join(','));
+  document.documentElement.style.setProperty('--accent2', p.b.join(','));
+}
+
+/* ── particles orbiting the reactor ────────────────────────────── */
+const particles=[];
+function seedParticles(n){
+  for(let i=0;i<n;i++){
+    const r=(120+Math.random()*220);
+    particles.push({ ang:Math.random()*Math.PI*2, rad:r, base:r,
+      spd:(0.0015+Math.random()*0.004)*(Math.random()<.5?-1:1),
+      size:0.6+Math.random()*1.8, tw:Math.random()*Math.PI*2 });
+  }
+}
+seedParticles(90);
+
+/* ── helpers ───────────────────────────────────────────────────── */
+const lerp=(a,b,t)=>a+(b-a)*t;
+function lerpArr(a,b,t){ for(let i=0;i<a.length;i++) a[i]=lerp(a[i],b[i],t); }
+const rgba=(c,al)=>`rgba(${c[0]|0},${c[1]|0},${c[2]|0},${al})`;
+
+/* ── main render loop ──────────────────────────────────────────── */
+let last=performance.now();
+function frame(now){
+  const dt=Math.min(0.05,(now-last)/1000); last=now; S.t+=dt;
+
+  // smooth values
+  S.level = lerp(S.level, S.levelTarget, 0.18);
+  S.levelTarget *= 0.90; // decay so it falls back when no updates
+  lerpArr(S.spectrum, S.spectrumTarget, 0.25);
+  for(let i=0;i<S.spectrumTarget.length;i++) S.spectrumTarget[i]*=0.92;
+  lerpArr(S.col.a, S.colTarget.a, 0.06);
+  lerpArr(S.col.b, S.colTarget.b, 0.06);
+  S.spin = lerp(S.spin, S.spinTarget, 0.05);
+  S.ignite = lerp(S.ignite, 1, 0.03);
+
+  ctx.clearRect(0,0,W,H);
+  drawBackground();
+  drawGrid();
+  // everything glowing is drawn additively so overlapping light blooms (movie look)
+  ctx.globalCompositeOperation = 'lighter';
+  drawOrbits();
+  drawReactor();
+  drawWaveform();
+  drawParticles();
+  ctx.globalCompositeOperation = 'source-over';
+
+  requestAnimationFrame(frame);
+}
+
+function drawBackground(){
+  const scale=DPR;
+  const g=ctx.createRadialGradient(CX,CY,0,CX,CY,Math.max(W,H)*0.7);
+  const c=S.col.a;
+  g.addColorStop(0, rgba(c, 0.10+0.05*S.level));
+  g.addColorStop(0.35, 'rgba(3,10,18,0.6)');
+  g.addColorStop(1, 'rgba(1,3,7,1)');
+  ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+}
+
+function drawGrid(){
+  ctx.save();
+  ctx.globalAlpha=0.05*S.ignite;
+  ctx.strokeStyle=rgba(S.col.a,0.5); ctx.lineWidth=1*DPR;
+  const step=46*DPR;
+  ctx.beginPath();
+  for(let x=(CX%step);x<W;x+=step){ ctx.moveTo(x,0); ctx.lineTo(x,H); }
+  for(let y=(CY%step);y<H;y+=step){ ctx.moveTo(0,y); ctx.lineTo(W,y); }
+  ctx.stroke();
+  ctx.restore();
+}
+
+/* concentric HUD rings with tick marks & rotating arcs */
+function drawOrbits(){
+  const base=Math.min(W,H)*0.235;
+  ctx.save(); ctx.translate(CX,CY);
+  const c=S.col.a, b=S.col.b;
+
+  // outer degree ring with ticks
+  ring(base*1.28, 0.30, c, 1.2, S.t*0.05*S.spin);
+  ticks(base*1.28, 120, c, 0.5);
+
+  // rotating broken arcs
+  brokenArc(base*1.12, S.t*0.4*S.spin,  [0.0,0.22,0.4,0.62,0.75,0.95], c, 3);
+  brokenArc(base*0.98, -S.t*0.55*S.spin,[0.1,0.3,0.55,0.7], b, 2);
+
+  // reticle crosshair segments
+  ctx.globalAlpha=0.5*S.ignite; ctx.strokeStyle=rgba(c,0.5); ctx.lineWidth=1.4*DPR;
+  for(let k=0;k<4;k++){
+    const a=k*Math.PI/2 + S.t*0.1;
+    ctx.beginPath();
+    ctx.moveTo(Math.cos(a)*base*1.34, Math.sin(a)*base*1.34);
+    ctx.lineTo(Math.cos(a)*base*1.42, Math.sin(a)*base*1.42);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function ring(r,alpha,c,lw,rot){
+  ctx.save(); ctx.rotate(rot);
+  ctx.globalAlpha=alpha*S.ignite; ctx.strokeStyle=rgba(c,0.8); ctx.lineWidth=lw*DPR;
+  ctx.beginPath(); ctx.arc(0,0,r,0,Math.PI*2); ctx.stroke(); ctx.restore();
+}
+function ticks(r,n,c,alpha){
+  ctx.save(); ctx.globalAlpha=alpha*S.ignite; ctx.strokeStyle=rgba(c,0.7); ctx.lineWidth=1*DPR;
+  for(let i=0;i<n;i++){
+    const a=(i/n)*Math.PI*2; const big=(i%10===0);
+    const r1=r, r2=r+(big?10:5)*DPR;
+    ctx.beginPath(); ctx.moveTo(Math.cos(a)*r1,Math.sin(a)*r1); ctx.lineTo(Math.cos(a)*r2,Math.sin(a)*r2); ctx.stroke();
+  }
+  ctx.restore();
+}
+function brokenArc(r,rot,segs,c,lw){
+  ctx.save(); ctx.rotate(rot); ctx.globalAlpha=0.8*S.ignite;
+  ctx.strokeStyle=rgba(c,0.9); ctx.lineWidth=lw*DPR; ctx.lineCap='round';
+  ctx.shadowBlur=12*DPR; ctx.shadowColor=rgba(c,0.7);
+  for(let i=0;i<segs.length;i+=2){
+    const a0=segs[i]*Math.PI*2, a1=(segs[i+1]??(segs[i]+0.12))*Math.PI*2;
+    ctx.beginPath(); ctx.arc(0,0,r,a0,a1); ctx.stroke();
+  }
+  ctx.restore();
+}
+
+/* the arc-reactor core */
+function drawReactor(){
+  const base=Math.min(W,H)*0.235;
+  const pulse=0.5+0.5*Math.sin(S.t*2.2);
+  const lvl=S.level;
+  ctx.save(); ctx.translate(CX,CY);
+  const c=S.col.a, b=S.col.b;
+
+  // outer glow halo (reacts to level)
+  const halo=ctx.createRadialGradient(0,0,base*0.2,0,0,base*(0.95+lvl*0.5));
+  halo.addColorStop(0, rgba(b,0.55+lvl*0.45));
+  halo.addColorStop(0.5, rgba(c,0.22));
+  halo.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.globalAlpha=S.ignite; ctx.fillStyle=halo;
+  ctx.beginPath(); ctx.arc(0,0,base*(1.0+lvl*0.5),0,Math.PI*2); ctx.fill();
+
+  // reactor housing ring
+  ctx.globalAlpha=S.ignite;
+  ctx.lineWidth=6*DPR; ctx.strokeStyle=rgba(c,0.85);
+  ctx.shadowBlur=24*DPR; ctx.shadowColor=rgba(c,0.9);
+  ctx.beginPath(); ctx.arc(0,0,base*0.62,0,Math.PI*2); ctx.stroke();
+
+  // inner coil segments (the classic arc-reactor "triangle-in-circle" coils)
+  const coils=9;
+  ctx.lineWidth=3*DPR; ctx.strokeStyle=rgba(b,0.9);
+  for(let i=0;i<coils;i++){
+    const a0=(i/coils)*Math.PI*2 + S.t*0.15;
+    const a1=a0 + (Math.PI*2/coils)*0.62;
+    ctx.beginPath(); ctx.arc(0,0,base*0.5,a0,a1); ctx.stroke();
+  }
+
+  // inner triangle (iconic)
+  ctx.shadowBlur=18*DPR;
+  ctx.globalAlpha=S.ignite*(0.8);
+  ctx.strokeStyle=rgba(b,0.9); ctx.lineWidth=2.4*DPR;
+  ctx.save(); ctx.rotate(S.t*0.2);
+  ctx.beginPath();
+  for(let i=0;i<3;i++){ const a=i*Math.PI*2/3 - Math.PI/2; const r=base*0.30;
+    i? ctx.lineTo(Math.cos(a)*r,Math.sin(a)*r) : ctx.moveTo(Math.cos(a)*r,Math.sin(a)*r); }
+  ctx.closePath(); ctx.stroke(); ctx.restore();
+
+  // bright core — white-hot centre with a coloured bloom
+  const coreR=base*(0.21+lvl*0.12+pulse*0.025);
+  const core=ctx.createRadialGradient(0,0,0,0,0,coreR*1.9);
+  core.addColorStop(0,'rgba(255,255,255,'+(1.0*S.ignite)+')');
+  core.addColorStop(0.22,'rgba(255,255,255,'+(0.9*S.ignite)+')');
+  core.addColorStop(0.5, rgba(b,0.95*S.ignite));
+  core.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.shadowBlur=55*DPR; ctx.shadowColor=rgba(b,1.0);
+  ctx.fillStyle=core; ctx.beginPath(); ctx.arc(0,0,coreR*1.9,0,Math.PI*2); ctx.fill();
+  // a second tight white kernel for that "hot" centre
+  const kernel=ctx.createRadialGradient(0,0,0,0,0,coreR*0.6);
+  kernel.addColorStop(0,'rgba(255,255,255,'+(1.0*S.ignite)+')');
+  kernel.addColorStop(1,'rgba(255,255,255,0)');
+  ctx.fillStyle=kernel; ctx.beginPath(); ctx.arc(0,0,coreR*0.6,0,Math.PI*2); ctx.fill();
+
+  ctx.restore();
+}
+
+/* circular audio-reactive waveform (uses spectrum bins) */
+function drawWaveform(){
+  const base=Math.min(W,H)*0.235;
+  const r0=base*0.66;
+  const bins=S.spectrum.length;
+  ctx.save(); ctx.translate(CX,CY);
+  const c=S.col.b;
+  ctx.globalAlpha=S.ignite; ctx.strokeStyle=rgba(c,0.9); ctx.lineWidth=2*DPR;
+  ctx.shadowBlur=14*DPR; ctx.shadowColor=rgba(c,0.8);
+  // mirror the spectrum around the circle for symmetry
+  ctx.beginPath();
+  const total=bins*2;
+  for(let i=0;i<=total;i++){
+    const idx = i<bins ? i : (total-1-i);
+    const v = S.spectrum[Math.max(0,Math.min(bins-1,idx))];
+    const a=(i/total)*Math.PI*2 - Math.PI/2;
+    const rr=r0 + v*base*0.5 + S.level*base*0.06;
+    const x=Math.cos(a)*rr, y=Math.sin(a)*rr;
+    i? ctx.lineTo(x,y): ctx.moveTo(x,y);
+  }
+  ctx.closePath(); ctx.stroke();
+  ctx.restore();
+}
+
+function drawParticles(){
+  ctx.save(); ctx.translate(CX,CY);
+  const c=S.col.b;
+  for(const p of particles){
+    p.ang += p.spd*(1+S.level*1.5)*S.spin;
+    p.tw += 0.05;
+    const rad=(p.base + Math.sin(S.t*0.5+p.tw)*8)*DPR*0.5 + p.base*0.5;
+    const x=Math.cos(p.ang)*rad, y=Math.sin(p.ang)*rad;
+    const tw=0.4+0.6*(0.5+0.5*Math.sin(p.tw));
+    ctx.globalAlpha=tw*0.7*S.ignite;
+    ctx.fillStyle=rgba(c,0.9); ctx.shadowBlur=6*DPR; ctx.shadowColor=rgba(c,0.8);
+    ctx.beginPath(); ctx.arc(x,y,p.size*DPR,0,Math.PI*2); ctx.fill();
+  }
+  ctx.restore();
+}
+
+requestAnimationFrame(frame);
+
+/* ═══ subtitle / transcript handling ═══════════════════════════ */
+const userLine=document.getElementById('userLine');
+const jarvisLine=document.getElementById('jarvisLine');
+let typeTimer=null;
+function showUser(text){
+  userLine.textContent=text; userLine.classList.add('show');
+}
+function typeJarvis(text){
+  clearInterval(typeTimer);
+  jarvisLine.innerHTML=''; let i=0;
+  const span=document.createElement('span'); jarvisLine.appendChild(span);
+  const cur=document.createElement('span'); cur.className='cursor'; jarvisLine.appendChild(cur);
+  typeTimer=setInterval(()=>{
+    span.textContent=text.slice(0,++i);
+    if(i>=text.length){ clearInterval(typeTimer); setTimeout(()=>{ if(cur.parentNode) cur.remove(); }, 1200); }
+  }, 22);
+}
+
+/* ═══ clock + telemetry defaults ═══════════════════════════════ */
+function tickClock(){
+  const d=new Date();
+  const hh=String(d.getHours()).padStart(2,'0'), mm=String(d.getMinutes()).padStart(2,'0'), ss=String(d.getSeconds()).padStart(2,'0');
+  document.getElementById('clockTime').textContent=`${hh}:${mm}:${ss}`;
+  document.getElementById('clockDate').textContent=d.toLocaleDateString(undefined,{weekday:'short',day:'2-digit',month:'short',year:'numeric'}).toUpperCase();
+}
+setInterval(tickClock,1000); tickClock();
+
+function setTelem(cpu,mem){
+  if(cpu!=null){ document.getElementById('cpuBar').style.width=cpu+'%'; document.getElementById('cpuVal').textContent=cpu+'%'; }
+  if(mem!=null){ document.getElementById('memBar').style.width=mem+'%'; document.getElementById('memVal').textContent=mem+'%'; }
+}
+
+/* ═══ boot sequence ════════════════════════════════════════════ */
+const BOOT=[
+  ['INITIALIZING ARC REACTOR CORE', 'ok'],
+  ['LOADING NEURAL VOICE MATRIX', 'ok'],
+  ['CALIBRATING ACOUSTIC SENSORS', 'ok'],
+  ['MOUNTING SYSTEM CONTROL MODULES', 'ok'],
+  ['ESTABLISHING SECURE UPLINK', 'ok'],
+  ['WAKE-WORD ENGINE  ::  "HEY JARVIS"', 'ok'],
+  ['ALL SYSTEMS NOMINAL', 'ok'],
+];
+function runBoot(){
+  const box=document.getElementById('bootLines');
+  const title=document.getElementById('bootTitle');
+  title.animate([{opacity:0,letterSpacing:'.6em'},{opacity:1,letterSpacing:'.34em'}],{duration:1000,fill:'forwards'});
+  let i=0;
+  const iv=setInterval(()=>{
+    if(i>=BOOT.length){ clearInterval(iv); setTimeout(finishBoot,650); return; }
+    const [txt,cls]=BOOT[i++];
+    const line=document.createElement('div'); line.className='line';
+    line.innerHTML=`<b>[ ${String(i).padStart(2,'0')} ]</b> ${txt} &nbsp; <span class="${cls}">[ OK ]</span>`;
+    box.appendChild(line);
+    line.animate([{opacity:0,transform:'translateY(6px)'},{opacity:1,transform:'none'}],{duration:300,fill:'forwards'});
+  }, 260);
+}
+function finishBoot(){
+  const boot=document.getElementById('boot'); boot.classList.add('hide');
+  setTimeout(()=>boot.style.display='none', 1300);
+  typeJarvis('Good evening, sir. All systems are online.');
+}
+runBoot();
+
+/* ═══ WebSocket bridge to Python core ══════════════════════════ */
+let ws=null, reconnectT=null;
+function connect(){
+  try{ ws=new WebSocket('ws://127.0.0.1:8765'); }catch(e){ scheduleReconnect(); return; }
+  ws.onopen=()=>{ setConn(true); };
+  ws.onclose=()=>{ setConn(false); scheduleReconnect(); };
+  ws.onerror=()=>{ try{ws.close();}catch(_){} };
+  ws.onmessage=(ev)=>{ try{ handle(JSON.parse(ev.data)); }catch(e){} };
+}
+function scheduleReconnect(){ clearTimeout(reconnectT); reconnectT=setTimeout(connect, 1500); }
+function setConn(on){
+  const el=document.getElementById('conn');
+  el.textContent = on? 'LINK: SECURE' : 'LINK: OFFLINE';
+  el.classList.toggle('off', !on);
+  if(!on && S.mode!=='offline'){ /* keep last visual */ }
+}
+connect();
+
+function handle(m){
+  switch(m.type){
+    case 'state': setMode(m.state); break;
+    case 'level': S.levelTarget=Math.max(S.levelTarget, Math.min(1, m.value||0)); break;
+    case 'spectrum':
+      if(Array.isArray(m.bins)){
+        const n=S.spectrumTarget.length;
+        for(let i=0;i<n;i++){ const src=m.bins[Math.floor(i*m.bins.length/n)]||0; S.spectrumTarget[i]=Math.min(1,src); }
+        S.levelTarget=Math.max(S.levelTarget, m.level||0);
+      }
+      break;
+    case 'user': showUser(m.text||''); break;
+    case 'jarvis': typeJarvis(m.text||''); break;
+    case 'telemetry': setTelem(m.cpu, m.mem); break;
+    case 'brain': document.getElementById('brainVal').textContent='BRAIN: '+(m.name||'----').toUpperCase(); break;
+    case 'status': document.getElementById('online').textContent=(m.text||'SYSTEM ONLINE').toUpperCase(); break;
+    case 'boot_done': finishBoot(); break;
+  }
+}
+
+/* click the core to trigger push-to-talk */
+canvas.addEventListener('click',(e)=>{
+  const dx=e.clientX*DPR-CX, dy=e.clientY*DPR-CY;
+  const base=Math.min(W,H)*0.235;
+  if(Math.hypot(dx,dy) < base*0.7){
+    if(ws && ws.readyState===1) ws.send(JSON.stringify({type:'push_to_talk'}));
+    setMode('listening');
+  }
+});
+/* keyboard: space = talk, esc = stop */
+addEventListener('keydown',(e)=>{
+  if(e.code==='Space'){ e.preventDefault(); if(ws&&ws.readyState===1) ws.send(JSON.stringify({type:'push_to_talk'})); }
+  if(e.code==='Escape'){ if(ws&&ws.readyState===1) ws.send(JSON.stringify({type:'stop'})); }
+});
+
+/* power-down button → tells Python to close the app */
+document.getElementById('powerbtn').addEventListener('click',()=>{
+  if(ws && ws.readyState===1) ws.send(JSON.stringify({type:'quit'}));
+  setMode('offline');
+  document.getElementById('stateLabel').textContent='POWERING DOWN';
+});
+</script>
+</body>
+</html>
