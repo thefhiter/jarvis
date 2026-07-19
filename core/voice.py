@@ -15,6 +15,51 @@ import sounddevice as sd
 BLOCK = 1280          # 80 ms @ 16 kHz — required frame size for openWakeWord
 
 
+class ClapDetector:
+    """Detects a clap (or double clap) from the transient shape of each 80 ms block.
+
+    A clap is a short, loud, broadband burst → high peak, high crest factor
+    (peak-to-RMS), well above the ambient floor. Requiring two claps within a
+    short window makes it robust against stray loud noises.
+    """
+    def __init__(self, cfg):
+        self.cfg = cfg
+        self.bg = 0.02              # ambient RMS (slow EMA)
+        self.frame = 0
+        self.last_clap = -100
+        self.refractory_until = 0
+
+    def _is_clap(self, block) -> bool:
+        peak = float(np.max(np.abs(block)))
+        rms = float(np.sqrt(np.mean(block ** 2)) + 1e-9)
+        crest = peak / rms
+        return (peak > self.cfg.clap_sensitivity) and (crest > 3.2) and (peak > self.bg * 6)
+
+    def feed(self, block) -> bool:
+        self.frame += 1
+        rms = float(np.sqrt(np.mean(block ** 2)) + 1e-9)
+        in_refractory = self.frame < self.refractory_until
+        clap = (not in_refractory) and self._is_clap(block)
+        if not clap:
+            # Learn the noise floor ONLY from genuinely quiet, non-refractory frames.
+            # The rms < bg*3 clamp keeps a loud clap tail, speech, or music from being
+            # averaged in — otherwise bg ratchets up and peak > bg*6 stops firing.
+            if not in_refractory and rms < self.bg * 3:
+                self.bg = 0.95 * self.bg + 0.05 * rms
+            return False
+        self.refractory_until = self.frame + 4          # ignore this clap's ~320 ms tail
+        if self.cfg.clap_count <= 1:
+            self.last_clap = self.frame
+            return True
+        gap = self.frame - self.last_clap               # frames since the previous clap
+        self.last_clap = self.frame
+        # refractory enforces gap >= 4, so this is a genuine second clap ~320–720 ms later
+        if 2 <= gap <= 9:
+            self.last_clap = -100
+            return True
+        return False
+
+
 class Ears:
     def __init__(self, cfg, hud):
         self.cfg = cfg
@@ -23,6 +68,7 @@ class Ears:
         self._stream = None
         self._model = None      # faster-whisper
         self._oww = None        # openWakeWord
+        self._clap = ClapDetector(cfg)
 
     # ── heavy init (models) ─────────────────────────────────────
     def load(self) -> None:
@@ -83,6 +129,9 @@ class Ears:
                 trigger.clear()
                 return True
             block = self._read()          # keeps the mic warm even with no wake engine
+            if self.cfg.enable_clap and self._clap.feed(block):
+                self.hud.send({"type": "pulse"})   # shockwave cue on the HUD
+                return True
             if self._oww:
                 scores = self._oww.predict(block)
                 if scores.get(self.cfg.wakeword, 0.0) >= self.cfg.wakeword_threshold:

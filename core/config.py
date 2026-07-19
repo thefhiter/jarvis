@@ -43,6 +43,11 @@ class Config:
     wakeword: str = "hey_jarvis"
     wakeword_threshold: float = 0.5
 
+    # ── clap to activate ────────────────────────────────────────
+    enable_clap: bool = True
+    clap_count: int = 2                 # 1 = single clap, 2 = double clap (fewer false alarms)
+    clap_sensitivity: float = 0.22      # peak amplitude to count as a clap (lower = more sensitive)
+
     # endpointing: stop capturing a command after this much trailing silence
     silence_ms: int = 800
     max_command_ms: int = 12000

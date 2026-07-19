@@ -98,6 +98,8 @@ class Assistant:
             "tts_rate": c.tts_rate, "wakeword_threshold": c.wakeword_threshold,
             "user_title": c.user_title, "enable_voice": c.enable_voice,
             "enable_wakeword": c.enable_wakeword,
+            "enable_clap": c.enable_clap, "clap_count": c.clap_count,
+            "clap_sensitivity": c.clap_sensitivity,
         }})
 
     def _apply_config(self, d: dict) -> None:
@@ -129,6 +131,15 @@ class Assistant:
                 pass
         if "enable_voice" in d:
             c.enable_voice = bool(d["enable_voice"])
+        if "enable_clap" in d:
+            c.enable_clap = bool(d["enable_clap"]); changed.append("clap trigger")
+        if d.get("clap_count") in (1, 2):
+            c.clap_count = int(d["clap_count"])
+        if "clap_sensitivity" in d:
+            try:
+                c.clap_sensitivity = max(0.08, min(0.6, float(d["clap_sensitivity"])))
+            except (TypeError, ValueError):
+                pass
         # heaviest change last: swap the speech-to-text model on a worker
         new_model = d.get("whisper_model")
         if new_model in WHISPER_SIZES and new_model != c.whisper_model:

@@ -39,6 +39,7 @@ SAMPLE_CONFIG = {
     "has_groq_key": False, "whisper_model": "base", "tts_engine": "edge",
     "tts_voice": "en-GB-RyanNeural", "wakeword_threshold": 0.5, "user_title": "sir",
     "enable_voice": True, "enable_wakeword": True,
+    "enable_clap": True, "clap_count": 2, "clap_sensitivity": 0.22,
 }
 
 
@@ -77,6 +78,8 @@ def main():
     t0 = time.time()
     while True:
         for state, user, jarvis, dur in scenes:
+            if state == "listening":
+                hud.send({"type": "pulse"})       # simulate a clap shockwave
             hud.state(state)
             if user:
                 hud.user(user)

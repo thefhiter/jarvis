@@ -176,7 +176,7 @@
     <div class="jarvis" id="jarvisLine"></div>
   </div>
 
-  <div class="hint" id="hint">SPACE = TALK &nbsp;·&nbsp; T = TYPE &nbsp;·&nbsp; SAY “HEY JARVIS”</div>
+  <div class="hint" id="hint">SAY “HEY JARVIS” &nbsp;·&nbsp; CLAP CLAP &nbsp;·&nbsp; SPACE = TALK &nbsp;·&nbsp; T = TYPE</div>
   <div class="conn off" id="conn">LINK: OFFLINE</div>
   <div class="gear" id="gear" title="Settings">&#x2699;</div>
   <div class="powerbtn" id="powerbtn" title="Power down JARVIS">&#x23FB;</div>
@@ -261,6 +261,21 @@
         </div>
       </div>
 
+      <div class="row2">
+        <div class="field">
+          <label>Clap to activate</label>
+          <select id="set_clap">
+            <option value="2">Double clap</option>
+            <option value="1">Single clap</option>
+            <option value="off">Off</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Clap loudness needed <span class="rangeval" id="csval">0.22</span></label>
+          <input id="set_clapsens" type="range" min="0.08" max="0.6" step="0.02" value="0.22" />
+        </div>
+      </div>
+
       <div class="field">
         <label>Address me as</label>
         <input id="set_title" type="text" placeholder="sir" />
@@ -317,7 +332,15 @@ const S = {
   spin:1.0, spinTarget:1.0,
   t:0,
   ignite:0,        // 0..1 reactor power-on
+  flash:0,         // 0..1 bloom pulse on state change / clap
+  clap:0,          // 0..1 clap impulse, decays fast — drives the shockburst
 };
+const ripples=[]; // expanding shockwave rings
+function spawnRipple(strength){
+  if(ripples.length>=6) ripples.shift();   // bound the array — bursts of pulses can't pile up
+  const base=Math.min(W,H)*0.235;
+  ripples.push({ r:base*0.45, life:1, str:strength||1 });
+}
 
 function setMode(m){
   if(!PALETTE[m]) m='idle';
@@ -329,6 +352,8 @@ function setMode(m){
   el.textContent=p.label;
   document.documentElement.style.setProperty('--accent', p.a.join(','));
   document.documentElement.style.setProperty('--accent2', p.b.join(','));
+  S.flash=1;                                  // bloom pulse on every transition
+  if(m==='listening'||m==='speaking'||m==='thinking') spawnRipple(1);
 }
 
 /* ── particles orbiting the reactor ────────────────────────────── */
@@ -362,6 +387,8 @@ function frame(now){
   lerpArr(S.col.b, S.colTarget.b, 0.06);
   S.spin = lerp(S.spin, S.spinTarget, 0.05);
   S.ignite = lerp(S.ignite, 1, 0.03);
+  S.flash *= 0.90;
+  S.clap  *= 0.86;
 
   ctx.clearRect(0,0,W,H);
   drawBackground();
@@ -369,16 +396,21 @@ function frame(now){
   // everything glowing is drawn additively so overlapping light blooms (movie look)
   ctx.globalCompositeOperation = 'lighter';
   drawOrbits();
+  drawRadar();
   drawReactor();
   drawWaveform();
+  drawFreqBars();
   drawParticles();
+  drawRipples(dt);
+  drawClapBurst(dt);
+  drawLightning(dt);
+  drawHoloVeil(dt);          // holographic veil sits over everything (drawn last)
   ctx.globalCompositeOperation = 'source-over';
 
   requestAnimationFrame(frame);
 }
 
 function drawBackground(){
-  const scale=DPR;
   const g=ctx.createRadialGradient(CX,CY,0,CX,CY,Math.max(W,H)*0.7);
   const c=S.col.a;
   g.addColorStop(0, rgba(c, 0.10+0.05*S.level));
@@ -506,11 +538,83 @@ function drawReactor(){
   kernel.addColorStop(1,'rgba(255,255,255,0)');
   ctx.fillStyle=kernel; ctx.beginPath(); ctx.arc(0,0,coreR*0.6,0,Math.PI*2); ctx.fill();
 
+  // transient bloom on state change / clap
+  if(S.flash>0.02){
+    const fb=ctx.createRadialGradient(0,0,0,0,0,base*0.95);
+    fb.addColorStop(0, rgba(b,0.55*S.flash)); fb.addColorStop(1,'rgba(0,0,0,0)');
+    ctx.globalAlpha=S.flash*S.ignite; ctx.fillStyle=fb;
+    ctx.beginPath(); ctx.arc(0,0,base*0.95,0,Math.PI*2); ctx.fill();
+  }
+
+  ctx.restore();
+}
+
+/* radar sweep — rotating wedge in the listening state (conic gradient) */
+function drawRadar(){
+  if(S.mode!=='listening') return;
+  const base=Math.min(W,H)*0.235;
+  ctx.save(); ctx.translate(CX,CY);
+  const c=S.col.b;
+  try{
+    ctx.beginPath();
+    ctx.arc(0,0,base*1.16,0,Math.PI*2);
+    ctx.arc(0,0,base*0.64,0,Math.PI*2,true);
+    ctx.clip('evenodd');
+    const cg=ctx.createConicGradient(S.t*2.0,0,0);
+    cg.addColorStop(0.00, rgba(c,0.0));
+    cg.addColorStop(0.02, rgba(c,0.34));
+    cg.addColorStop(0.16, rgba(c,0.0));
+    cg.addColorStop(1.00, rgba(c,0.0));
+    ctx.globalAlpha=S.ignite*0.8; ctx.fillStyle=cg;
+    ctx.beginPath(); ctx.arc(0,0,base*1.16,0,Math.PI*2); ctx.fill();
+  }catch(e){ /* createConicGradient unsupported → skip */ }
+  ctx.restore();
+}
+
+/* radial audio bars — react to the spectrum during listening/speaking */
+function drawFreqBars(){
+  if(S.mode!=='speaking' && S.mode!=='listening') return;
+  const base=Math.min(W,H)*0.235, r0=base*0.72;
+  const n=S.spectrum.length;
+  ctx.save(); ctx.translate(CX,CY);
+  const c=S.col.b;
+  // No per-bar shadowBlur (that was 64 shadow passes/frame) — the additive 'lighter'
+  // compositing already blooms the bars; a wider line keeps the glow.
+  ctx.strokeStyle=rgba(c,0.95); ctx.lineWidth=3.2*DPR; ctx.lineCap='round';
+  for(let i=0;i<n;i++){
+    const v=S.spectrum[i]; if(v<0.03) continue;
+    const a=(i/n)*Math.PI*2 - Math.PI/2;
+    const len=v*base*0.42;
+    ctx.globalAlpha=S.ignite*(0.35+0.65*v);   // per-bar brightness preserved
+    ctx.beginPath();
+    ctx.moveTo(Math.cos(a)*r0, Math.sin(a)*r0);
+    ctx.lineTo(Math.cos(a)*(r0+len), Math.sin(a)*(r0+len));
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+/* expanding shockwave rings (state change / clap) */
+function drawRipples(dt){
+  if(!ripples.length) return;
+  const base=Math.min(W,H)*0.235;
+  ctx.save(); ctx.translate(CX,CY);
+  const c=S.col.b;
+  for(let i=ripples.length-1;i>=0;i--){
+    const rp=ripples[i];
+    rp.r += base*1.7*dt; rp.life -= dt*0.75;
+    if(rp.life<=0){ ripples.splice(i,1); continue; }
+    ctx.globalAlpha=Math.max(0,rp.life)*0.6*rp.str;
+    ctx.strokeStyle=rgba(c,0.9); ctx.lineWidth=(1.5+2*rp.life)*DPR;
+    ctx.shadowBlur=18*DPR; ctx.shadowColor=rgba(c,0.8);
+    ctx.beginPath(); ctx.arc(0,0,rp.r,0,Math.PI*2); ctx.stroke();
+  }
   ctx.restore();
 }
 
 /* circular audio-reactive waveform (uses spectrum bins) */
 function drawWaveform(){
+  if(S.mode!=='speaking' && S.mode!=='listening') return;   // no audio → skip the ring
   const base=Math.min(W,H)*0.235;
   const r0=base*0.66;
   const bins=S.spectrum.length;
@@ -546,6 +650,149 @@ function drawParticles(){
     ctx.fillStyle=rgba(c,0.9); ctx.shadowBlur=6*DPR; ctx.shadowColor=rgba(c,0.8);
     ctx.beginPath(); ctx.arc(x,y,p.size*DPR,0,Math.PI*2); ctx.fill();
   }
+  ctx.restore();
+}
+
+/* ── CLAP SHOCKBURST ─────────────────────────────────────────────
+   A radial spray of energy shards + a hard ripple + core flash, fired
+   the instant a clap is detected. Shards decelerate and fade so the
+   burst reads as a discharge from the reactor riding the shockwave. */
+const clapShards=[];
+function triggerClap(){
+  S.clap=1; S.flash=1;
+  spawnRipple(1.6);
+  spawnRipple(1.1);              // double front for a denser wall
+  const base=Math.min(W,H)*0.235;
+  const n=26;
+  for(let i=0;i<n;i++){
+    const a=(i/n)*Math.PI*2 + Math.random()*0.18;
+    const spd=(2.4+Math.random()*3.2)*base*0.006*DPR*60; // px/sec-ish
+    clapShards.push({ a, r:base*0.5, vr:spd, life:1,
+      len:(10+Math.random()*22)*DPR, w:(1+Math.random()*1.6)*DPR });
+  }
+}
+function drawClapBurst(dt){
+  if(!clapShards.length) return;
+  const c=S.col.b;
+  ctx.save(); ctx.translate(CX,CY);
+  ctx.lineCap='round';
+  ctx.shadowBlur=14*DPR; ctx.shadowColor=rgba(c,0.85);
+  for(let i=clapShards.length-1;i>=0;i--){
+    const s=clapShards[i];
+    s.r += s.vr*dt;
+    s.vr *= 0.92;               // decelerate
+    s.life -= dt*1.6;
+    if(s.life<=0){ clapShards.splice(i,1); continue; }
+    const ca=Math.cos(s.a), sa=Math.sin(s.a);
+    const r1=s.r, r2=s.r + s.len*s.life;
+    ctx.globalAlpha=Math.max(0,s.life)*0.9*S.ignite;
+    ctx.strokeStyle=rgba(c,0.95); ctx.lineWidth=s.w*(0.4+s.life);
+    ctx.beginPath(); ctx.moveTo(ca*r1, sa*r1); ctx.lineTo(ca*r2, sa*r2); ctx.stroke();
+  }
+  // bright leading rim while the clap impulse is fresh
+  if(S.clap>0.05){
+    const base=Math.min(W,H)*0.235;
+    ctx.globalAlpha=S.clap*0.5*S.ignite;
+    ctx.strokeStyle=rgba(c,0.9); ctx.lineWidth=(2+3*S.clap)*DPR;
+    ctx.shadowBlur=26*DPR;
+    ctx.beginPath(); ctx.arc(0,0, base*(0.55+(1-S.clap)*0.6),0,Math.PI*2); ctx.stroke();
+  }
+  ctx.restore();
+}
+
+/* ── ENERGY LIGHTNING ────────────────────────────────────────────
+   Jagged bolts arcing from the reactor housing to the outer ring while
+   JARVIS is thinking (and a weaker crackle when audio level spikes).
+   Bolts are regenerated on a timer so they flicker like real arcs. */
+let _boltTimer=0, _bolts=[];
+function _makeBolt(a, rInner, rOuter, jitter){
+  const pts=[]; const segs=7;
+  for(let i=0;i<=segs;i++){
+    const t=i/segs;
+    const rr=rInner + (rOuter-rInner)*t;
+    const taper=Math.sin(t*Math.PI);              // wobble tapers to 0 at both ends
+    const off=(Math.random()*2-1)*jitter*taper;
+    const pa=a + off/rr;
+    pts.push([Math.cos(pa)*rr, Math.sin(pa)*rr]);
+  }
+  return pts;
+}
+function drawLightning(dt){
+  const active = S.mode==='thinking';
+  const boost  = Math.max(0, S.level-0.55);       // audio spikes crackle too
+  if(!active && boost<=0){ _bolts.length=0; return; }
+  const base=Math.min(W,H)*0.235;
+  const rIn=base*0.64, rOut=base*1.12;
+  const c=S.col.b;
+  _boltTimer-=dt;
+  if(_boltTimer<=0){
+    _boltTimer = active? (0.05+Math.random()*0.06) : 0.12;
+    const count = active? (1+(Math.random()<0.4?1:0)) : (boost>0.15?1:0);
+    _bolts=[];
+    for(let k=0;k<count;k++){
+      const a=Math.random()*Math.PI*2;
+      _bolts.push({ pts:_makeBolt(a,rIn,rOut, base*0.16), life:1 });
+    }
+  }
+  ctx.save(); ctx.translate(CX,CY);
+  ctx.lineCap='round'; ctx.lineJoin='round';
+  ctx.shadowBlur=16*DPR; ctx.shadowColor=rgba(c,0.9);
+  for(let i=_bolts.length-1;i>=0;i--){
+    const b=_bolts[i];
+    b.life -= dt*7;                 // very short-lived → flicker
+    if(b.life<=0){ _bolts.splice(i,1); continue; }
+    const p=b.pts;
+    ctx.globalAlpha=Math.max(0,b.life)*0.8*S.ignite;   // fat soft underlay
+    ctx.strokeStyle=rgba(c,0.5); ctx.lineWidth=3.2*DPR;
+    ctx.beginPath(); ctx.moveTo(p[0][0],p[0][1]);
+    for(let j=1;j<p.length;j++) ctx.lineTo(p[j][0],p[j][1]);
+    ctx.stroke();
+    ctx.globalAlpha=Math.max(0,b.life)*0.95*S.ignite;  // hot white core
+    ctx.strokeStyle='rgba(255,255,255,0.95)'; ctx.lineWidth=1.2*DPR;
+    ctx.beginPath(); ctx.moveTo(p[0][0],p[0][1]);
+    for(let j=1;j<p.length;j++) ctx.lineTo(p[j][0],p[j][1]);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+/* ── HOLOGRAPHIC VEIL ────────────────────────────────────────────
+   Slow depth-parallax star drift behind the HUD + fine scanlines with a
+   travelling bright band, so the whole screen reads as a projection. */
+let _stars=null, _starW=0, _starH=0;
+function _seedStars(){
+  _stars=[]; _starW=W; _starH=H;
+  const n=Math.round((W*H)/(26000*DPR));   // density scales with area
+  for(let i=0;i<n;i++){
+    const depth=Math.random();             // 0 far … 1 near
+    _stars.push({ x:Math.random()*W, y:Math.random()*H, depth,
+      size:(0.4+depth*1.3)*DPR, tw:Math.random()*Math.PI*2 });
+  }
+}
+function drawHoloVeil(dt){
+  const c=S.col.a, b=S.col.b;
+  if(!_stars || _starW!==W || _starH!==H) _seedStars();
+  ctx.save();
+  for(const s of _stars){
+    s.x -= (4+s.depth*16)*dt*DPR;           // nearer stars drift faster
+    if(s.x < -2){ s.x=W+2; s.y=Math.random()*H; }
+    s.tw += dt*2;
+    const tw=0.35+0.65*(0.5+0.5*Math.sin(s.tw));
+    ctx.globalAlpha=(0.10+0.28*s.depth)*tw*S.ignite;
+    ctx.fillStyle=rgba(b,0.9);
+    ctx.beginPath(); ctx.arc(s.x,s.y,s.size,0,Math.PI*2); ctx.fill();
+  }
+  const gap=3*DPR;
+  ctx.globalAlpha=0.05*S.ignite;
+  ctx.fillStyle=rgba(c,0.6);
+  for(let y=0;y<H;y+=gap) ctx.fillRect(0,y,W,1*DPR);
+  const bandY=((S.t*0.06)%1)*H, bandH=90*DPR;    // slow travelling scan band
+  const bg=ctx.createLinearGradient(0,bandY-bandH,0,bandY+bandH);
+  bg.addColorStop(0,'rgba(0,0,0,0)');
+  bg.addColorStop(0.5, rgba(b,0.10+0.05*S.level));
+  bg.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.globalAlpha=S.ignite; ctx.fillStyle=bg;
+  ctx.fillRect(0,bandY-bandH,W,bandH*2);
   ctx.restore();
 }
 
@@ -610,6 +857,7 @@ function runBoot(){
 function finishBoot(){
   const boot=document.getElementById('boot'); boot.classList.add('hide');
   setTimeout(()=>boot.style.display='none', 1300);
+  spawnRipple(1.8); S.flash=1;            // reactor ignition burst
   typeJarvis('Good evening, sir. All systems are online.');
 }
 runBoot();
@@ -649,6 +897,7 @@ function handle(m){
     case 'brain': document.getElementById('brainVal').textContent='BRAIN: '+(m.name||'----').toUpperCase(); break;
     case 'status': document.getElementById('online').textContent=(m.text||'SYSTEM ONLINE').toUpperCase(); break;
     case 'config': applyConfigToPanel(m.config||{}); break;
+    case 'pulse': triggerClap(); break;   // clap detected → shockburst
     case 'boot_done': finishBoot(); break;
   }
 }
@@ -659,6 +908,7 @@ canvas.addEventListener('click',(e)=>{
   const base=Math.min(W,H)*0.235;
   if(Math.hypot(dx,dy) < base*0.7){
     if(ws && ws.readyState===1) ws.send(JSON.stringify({type:'push_to_talk'}));
+    triggerClap();                 // tapping the core feels like a clap
     setMode('listening');
   }
 });
@@ -692,6 +942,8 @@ function applyConfigToPanel(c){
   if('tts_voice' in c) setSelectValue($('set_voice'), c.tts_voice);
   if('wakeword_threshold' in c){ $('set_wake').value=c.wakeword_threshold; $('wsval').textContent=Number(c.wakeword_threshold).toFixed(2); }
   if('enable_voice' in c) $('set_envoice').value=String(!!c.enable_voice);
+  if('enable_clap' in c || 'clap_count' in c) $('set_clap').value=(c.enable_clap===false)?'off':String(c.clap_count||2);
+  if('clap_sensitivity' in c){ $('set_clapsens').value=c.clap_sensitivity; $('csval').textContent=Number($('set_clapsens').value).toFixed(2); }
   if('user_title' in c) $('set_title').value=c.user_title||'';
   if(c.has_groq_key) $('set_groq_key').placeholder='key saved — leave blank to keep';
   toggleBrainFields();
@@ -715,7 +967,11 @@ function saveSettings(){
     whisper_model:$('set_whisper').value, tts_engine:$('set_engine').value,
     tts_voice:$('set_voice').value, wakeword_threshold:parseFloat($('set_wake').value),
     enable_voice:$('set_envoice').value==='true', user_title:$('set_title').value.trim()||'sir',
+    clap_sensitivity:parseFloat($('set_clapsens').value),
   };
+  const clapv=$('set_clap').value;
+  cfg.enable_clap = clapv!=='off';
+  if(clapv!=='off') cfg.clap_count = parseInt(clapv);
   const gk=$('set_groq_key').value.trim(); if(gk) cfg.groq_api_key=gk;
   if(ws&&ws.readyState===1) ws.send(JSON.stringify({type:'set_config', config:cfg}));
   closeSettings();
@@ -723,6 +979,7 @@ function saveSettings(){
 $('gear').addEventListener('click', openSettings);
 $('set_brain').addEventListener('change', toggleBrainFields);
 $('set_wake').addEventListener('input', ()=>{ $('wsval').textContent=Number($('set_wake').value).toFixed(2); });
+$('set_clapsens').addEventListener('input', ()=>{ $('csval').textContent=Number($('set_clapsens').value).toFixed(2); });
 $('set_cancel').addEventListener('click', closeSettings);
 $('set_save').addEventListener('click', saveSettings);
 settings.addEventListener('click',(e)=>{ if(e.target===settings) closeSettings(); });
