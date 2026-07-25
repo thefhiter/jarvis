@@ -36,6 +36,9 @@ class Mouth:
         self.hud = hud
         self._sapi = None
         self.stop = threading.Event()
+        # serialises ALL spoken output so e.g. a firing reminder can't open a second
+        # audio stream over an in-flight reply (or clear the barge-in flag mid-turn).
+        self._speak_lock = threading.Lock()
 
     def interrupt(self) -> None:
         self.stop.set()
@@ -45,9 +48,10 @@ class Mouth:
         text = (text or "").strip()
         if not text:
             return
-        self.stop.clear()
-        self._speak_one(text)
-        self.hud.level(0.0)
+        with self._speak_lock:
+            self.stop.clear()
+            self._speak_one(text)
+            self.hud.level(0.0)
 
     # ── public: speak a *stream* of text as it is generated ─────
     def speak_stream(self, chunks: Iterable[str],
@@ -60,10 +64,11 @@ class Mouth:
         decoded — the slow part) while the current one plays, so there's no gap
         between sentences. Returns the full spoken text.
         """
-        self.stop.clear()
-        if getattr(self.cfg, "tts_prefetch", True):
-            return self._stream_pipelined(chunks, on_text)
-        return self._stream_sequential(chunks, on_text)
+        with self._speak_lock:
+            self.stop.clear()
+            if getattr(self.cfg, "tts_prefetch", True):
+                return self._stream_pipelined(chunks, on_text)
+            return self._stream_sequential(chunks, on_text)
 
     @staticmethod
     def _close_source(chunks) -> None:
@@ -124,7 +129,7 @@ class Mouth:
                         continue
                     buf += piece
                     state["full"] += piece
-                    if on_text:
+                    if on_text and not self.stop.is_set():
                         try:
                             on_text(state["full"])
                         except Exception:
@@ -258,15 +263,18 @@ class Mouth:
         return np.frombuffer(proc.stdout, dtype=np.float32)
 
     def _play(self, pcm: np.ndarray) -> None:
-        with sd.OutputStream(samplerate=PLAY_SR, channels=1, dtype="float32",
-                             device=self.cfg.output_device) as out:
-            for i in range(0, len(pcm), HOP):
-                if self.stop.is_set():
-                    break
-                block = pcm[i:i + HOP]
-                out.write(block)
-                rms = float(np.sqrt(np.mean(block ** 2)) + 1e-9)
-                self.hud.spectrum(_spectrum(block), level=min(1.0, rms * 4.0))
+        try:
+            with sd.OutputStream(samplerate=PLAY_SR, channels=1, dtype="float32",
+                                 device=self.cfg.output_device) as out:
+                for i in range(0, len(pcm), HOP):
+                    if self.stop.is_set():
+                        break
+                    block = pcm[i:i + HOP]
+                    out.write(block)
+                    rms = float(np.sqrt(np.mean(block ** 2)) + 1e-9)
+                    self.hud.spectrum(_spectrum(block), level=min(1.0, rms * 4.0))
+        except Exception as e:      # busy/invalid output device — don't kill the turn
+            print(f"[tts] playback failed ({e})")
 
     # ── offline SAPI5 fallback ──────────────────────────────────
     def _speak_sapi(self, text: str) -> None:

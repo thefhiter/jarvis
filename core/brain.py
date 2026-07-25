@@ -360,6 +360,10 @@ class Brain:
     def _anthropic_key(self) -> str:
         return (getattr(self.cfg, "anthropic_api_key", "") or "").strip()
 
+    def has_vision(self) -> bool:
+        """True when a vision-capable backend (the Anthropic API) is configured."""
+        return bool(self._anthropic_key())
+
     # ── public: streaming ───────────────────────────────────────
     def ask_stream(self, prompt: str) -> Iterator[str]:
         """Yield the reply in chunks as it is generated, with automatic fallback.

@@ -31,7 +31,8 @@ class Assistant:
         self.skills = Skills(cfg, hud, self._say,
                              last_reply=lambda: self.last_reply,
                              forget=self._forget_conversation,
-                             describe_image=self._describe_screen)
+                             describe_image=self._describe_screen,
+                             can_see=self.brain.has_vision)
         self.stop = threading.Event()
         self.ptt = threading.Event()       # push-to-talk trigger from the HUD
         self._turn_lock = threading.Lock()  # serialises voice/text turns

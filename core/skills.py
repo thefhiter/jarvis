@@ -113,6 +113,7 @@ _MONTHS = {m: i for i, m in enumerate(
     ["january", "february", "march", "april", "may", "june", "july", "august",
      "september", "october", "november", "december"], start=1)}
 _MONTHS.update({m[:3]: i for m, i in list(_MONTHS.items())})
+_MONTHS["sept"] = 9   # September's common 4-letter abbreviation (vs the 3-letter "sep")
 
 # safe arithmetic — only these node/operator types are ever evaluated
 _MATH_OPS = {
@@ -166,13 +167,15 @@ def _safe_math(expr: str) -> float:
 
 
 class Skills:
-    def __init__(self, cfg, hud, say, last_reply=None, forget=None, describe_image=None):
+    def __init__(self, cfg, hud, say, last_reply=None, forget=None,
+                 describe_image=None, can_see=None):
         self.cfg = cfg
         self.hud = hud
         self.say = say                # callable(text) -> speaks via the mouth
         self._last_reply = last_reply or (lambda: "")   # getter for JARVIS's last line
         self._forget = forget or (lambda: None)         # clears brain conversation memory
         self._describe_image = describe_image           # callable(question, b64)->str (vision)
+        self._can_see = can_see or (lambda: True)        # is a vision-capable key configured?
         self.should_exit = False
         self._reminders: list[dict] = []   # active timers/reminders/alarms
         self._rid = 0
@@ -226,8 +229,10 @@ class Skills:
         return None
 
     def _repeat(self, t, _):
-        if re.search(r"\b(repeat that|say (that|it) again|what did you say|come again|"
-                     r"can you repeat that|repeat what you said)\b", t):
+        # imperative forms match anywhere; interrogative forms ("what did you say")
+        # must END the utterance so "what did you say about X" still reaches the brain.
+        if re.search(r"\b(repeat that|say (that|it) again|can you repeat that|repeat what you said)\b"
+                     r"|\b(what did you say|come again)( that| again| jarvis)*\s*$", t):
             last = (self._last_reply() or "").strip()
             if not last:
                 return f"I haven't said anything yet, {self.cfg.user_title}."
@@ -235,10 +240,15 @@ class Skills:
         return None
 
     def _reset(self, t, _):
-        if re.search(r"\b(forget (our|the|this) (conversation|chat|context)|"
-                     r"reset (our|the|your)? ?(conversation|chat|context|memory)|"
-                     r"clear (your )?memory|start over|new conversation|"
-                     r"forget what we (talked|said|discussed))\b", t):
+        # explicit multi-word intents can appear mid-sentence; the ambiguous short
+        # forms ("start over", "clear memory") only count as a WHOLE utterance so we
+        # never silently wipe context on "how do I clear memory in python".
+        explicit = re.search(
+            r"\b(forget (our|the|this) (conversation|chat|context)"
+            r"|reset (our|the|your) (conversation|chat|context|memory)"
+            r"|forget what we (talked|said|discussed))\b", t)
+        short = re.fullmatch(r"(clear (your |our )?memory|start over|new conversation)( jarvis)?", t)
+        if explicit or short:
             self._forget()
             return f"Done, {self.cfg.user_title}. I've cleared our conversation — a clean slate."
         return None
@@ -249,7 +259,7 @@ class Skills:
         return None
 
     def _date(self, t, _):
-        if re.search(r"\b(what('?s| is) the date|what day is it|today's date)\b", t):
+        if re.search(r"\b(what('?s| is) the date|what day (?:of the week )?is it|today's date)\b", t):
             return f"Today is {datetime.now().strftime('%A, %B %d, %Y')}."
         return None
 
@@ -331,13 +341,16 @@ class Skills:
         if re.match(r"^[\w-]+\.\w{2,}$", target):
             webbrowser.open("https://" + target)
             return f"Opening {target}."
-        # last resort: hand it to Windows' start
+        # last resort: only for a PLAUSIBLE single target (an app token or a path),
+        # never a multi-word phrase like "start over with the plan" — those are
+        # conversation, not launch commands, so let the brain field them.
+        if " " in target and not re.search(r"[\\/]|\.\w{2,4}$", target):
+            return None
         try:
             os.startfile(target)  # type: ignore[attr-defined]
             return f"Opening {target}."
         except Exception:
-            self._launch(f"start {target}")
-            return f"Attempting to open {target}, {self.cfg.user_title}."
+            return None
 
     def _launch(self, cmd: str):
         if cmd.startswith("start "):
@@ -438,6 +451,10 @@ class Skills:
             return None
         if self._describe_image is None:
             return None
+        if not self._can_see():
+            # no vision-capable key → don't grab the screen at all; guide instead.
+            return (f"To see your screen I need an Anthropic API key, {self.cfg.user_title}. "
+                    f"Add one in the settings gear and I'll be able to look.")
         try:
             from PIL import ImageGrab
             import base64
@@ -466,7 +483,11 @@ class Skills:
 
     # ── system status ───────────────────────────────────────────
     def _system(self, t, _):
-        if not re.search(r"\b(system status|how('?s| is) the (system|pc|computer)|cpu|memory|ram|status report)\b", t):
+        # require a status-query framing — bare "memory"/"cpu"/"ram" would hijack
+        # ordinary sentences like "how do I clear memory in python".
+        if not re.search(r"\b(system status|status report|how('?s| is) the (system|pc|computer)"
+                         r"|(cpu|processor|memory|ram) (usage|load|status)"
+                         r"|how much (memory|ram|cpu))\b", t):
             return None
         import psutil
         cpu = psutil.cpu_percent(interval=0.4)
@@ -546,10 +567,12 @@ class Skills:
         return None
 
     # ── scheduling core (timers / reminders / alarms share this) ─
-    def _schedule(self, secs: float, spoken: str, label: str, kind: str) -> int:
+    def _schedule(self, secs: float, spoken: str, label: str, kind: str,
+                  persist: bool = True) -> int:
         """Fire ``spoken`` via the mouth after ``secs`` seconds; track it so it can
         be listed or cancelled. Returns the reminder id. The registry is touched
-        from Timer callback threads too, so all access is guarded by _rlock."""
+        from Timer callback threads too, so all access is guarded by _rlock.
+        ``persist=False`` skips the disk write (used during bulk restore)."""
         due = datetime.now() + timedelta(seconds=secs)
 
         def fire():
@@ -564,7 +587,8 @@ class Skills:
             rid = self._rid
             self._reminders.append({"id": rid, "kind": kind, "label": label,
                                     "spoken": spoken, "due": due, "timer": timer})
-            self._persist()
+            if persist:
+                self._persist()
         timer.start()
         return rid
 
@@ -587,6 +611,7 @@ class Skills:
         except Exception:
             return
         now = datetime.now()
+        restored = 0
         for e in data if isinstance(data, list) else []:
             try:
                 due = datetime.fromisoformat(e["due"])
@@ -595,7 +620,13 @@ class Skills:
             if due <= now:
                 continue
             self._schedule((due - now).total_seconds(), e.get("spoken", ""),
-                           e.get("label", "reminder"), e.get("kind", "reminder"))
+                           e.get("label", "reminder"), e.get("kind", "reminder"),
+                           persist=False)      # avoid a write per entry…
+            restored += 1
+        if restored:
+            with self._rlock:
+                self._persist()                # …persist once at the end instead
+
 
     def _pending(self, t) -> str | None:
         if not re.search(r"\b(list|show|what are|any)\b.*\b(timer|timers|reminder|reminders|alarm|alarms)\b", t):

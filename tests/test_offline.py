@@ -375,6 +375,27 @@ def test_vision():
     sk2 = Skills(config.load(), FakeHud(), say=lambda t: None)
     check("vision no-op without callback", sk2._vision("what's on my screen", "") is None)
 
+    # PRIVACY: with no vision-capable key, do NOT capture the screen at all
+    grabbed = {"n": 0}
+    def spy_grab(*a, **k):
+        grabbed["n"] += 1
+        raise AssertionError("screen must not be captured without a key")
+    fg2 = _t.ModuleType("PIL.ImageGrab"); fg2.grab = spy_grab
+    fp2 = _t.ModuleType("PIL"); fp2.ImageGrab = fg2
+    _s2 = (sys.modules.get("PIL"), sys.modules.get("PIL.ImageGrab"))
+    sys.modules["PIL"] = fp2; sys.modules["PIL.ImageGrab"] = fg2
+    try:
+        sk3 = Skills(config.load(), FakeHud(), say=lambda t: None,
+                     describe_image=lambda q, b: "x", can_see=lambda: False)
+        r = sk3.handle("what's on my screen")
+        check("no-key vision gives guidance, not a capture",
+              r is not None and "Anthropic" in r and grabbed["n"] == 0, (r, grabbed))
+    finally:
+        if _s2[0] is not None: sys.modules["PIL"] = _s2[0]
+        else: sys.modules.pop("PIL", None)
+        if _s2[1] is not None: sys.modules["PIL.ImageGrab"] = _s2[1]
+        else: sys.modules.pop("PIL.ImageGrab", None)
+
 
 def test_now_context():
     section("brain — dynamic time context")
@@ -587,6 +608,57 @@ def _math_eq(phrase, sub):
     return r is not None and sub in r
 
 
+def test_regex_antishadow():
+    section("skills — reset/repeat/system/open no longer hijack normal phrases")
+    import types as _t2, subprocess, webbrowser, os
+    from core import config
+    from core.skills import Skills
+    replies = {"v": "prior answer, sir."}
+    forgot = {"v": False}
+    sk = Skills(config.load(), FakeHud(), say=lambda t: None,
+                last_reply=lambda: replies["v"],
+                forget=lambda: forgot.__setitem__("v", True))
+
+    def t(s):
+        return s.lower().strip().rstrip(".!?")
+
+    # _reset: explicit multi-word intents + whole-utterance short forms fire…
+    check("reset: 'forget our conversation'", sk._reset(t("forget our conversation"), "") is not None)
+    check("reset: 'start over' (whole)", sk._reset(t("start over"), "") is not None)
+    check("reset: 'clear your memory' (whole)", sk._reset(t("clear your memory"), "") is not None)
+    # …but embedded short forms must NOT wipe context
+    forgot["v"] = False
+    check("reset: not 'clear memory in python'", sk._reset(t("how do i clear memory in python"), "") is None)
+    check("reset: not 'start over with the plan'", sk._reset(t("lets start over with the plan"), "") is None)
+    check("reset: no forget side-effect fired", forgot["v"] is False)
+
+    # _repeat: imperative + trailing interrogative fire…
+    check("repeat: 'repeat that'", sk._repeat(t("repeat that"), "") == replies["v"])
+    check("repeat: 'what did you say'", sk._repeat(t("what did you say"), "") == replies["v"])
+    check("repeat: 'what did you say again'", sk._repeat(t("what did you say again"), "") == replies["v"])
+    # …but 'what did you say about X' is a real question -> brain
+    check("repeat: not 'what did you say about the weather'",
+          sk._repeat(t("what did you say about the weather"), "") is None)
+
+    # _system: bare 'memory'/'cpu'/'ram' no longer hijack
+    check("system: not 'clear memory in python'", sk._system(t("how do i clear memory in python"), "") is None)
+    check("system: 'cpu usage' still works", sk._system(t("what's my cpu usage"), "") is not None)
+    check("system: 'system status' still works", sk._system(t("system status"), "") is not None)
+
+    # _open: multi-word non-path phrase falls through to the brain, not a launch
+    _p = subprocess.Popen
+    subprocess.Popen = lambda *a, **k: _t2.SimpleNamespace(pid=0)
+    webbrowser.open = lambda *a, **k: True
+    if hasattr(os, "startfile"):
+        os.startfile = lambda *a, **k: None
+    try:
+        check("open: 'start over with the plan' -> brain",
+              sk._open(t("start over with the plan"), "start over with the plan") is None)
+        check("open: known app still launches", sk._open(t("open notepad"), "open notepad") is not None)
+    finally:
+        subprocess.Popen = _p
+
+
 def test_datecalc_and_ip():
     section("skills — date maths + public IP")
     import core.skills as S
@@ -607,6 +679,9 @@ def test_datecalc_and_ip():
     check("resolve 'december 25'", tgt is not None and tgt.month == 12 and tgt.day == 25)
     tgt2 = sk._resolve_date("25 december")
     check("resolve '25 december'", tgt2 is not None and tgt2.month == 12 and tgt2.day == 25)
+    sept = sk._resolve_date("sept 15")
+    check("resolve 'sept 15' (4-letter Sept)", sept is not None and sept.month == 9 and sept.day == 15)
+    check("'what day of the week is it' handled", sk.handle("what day of the week is it") is not None)
     check("bogus countdown -> brain", sk.handle("how many days until the big meeting") is None)
     check("date question not over-matched", sk.handle("what day is good for a walk") is None)
 
@@ -819,8 +894,9 @@ def main():
               test_brain_chain_and_fallback, test_apply_config, test_vision,
               test_now_context, test_speech_chunker, test_tts_pipeline,
               test_decimal_stream_split,
-              test_stream_json_parser, test_math_safety, test_datecalc_and_ip,
-              test_reminder_persistence, test_reminder_fire, test_skills, test_clap):
+              test_stream_json_parser, test_math_safety, test_regex_antishadow,
+              test_datecalc_and_ip, test_reminder_persistence, test_reminder_fire,
+              test_skills, test_clap):
         try:
             t()
         except Exception as e:
