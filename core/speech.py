@@ -56,9 +56,26 @@ class Mouth:
         moment it is ready while the rest is still being generated. ``on_text`` (if
         given) is called with the full text-so-far for a live HUD subtitle.
 
-        Returns the full spoken text.
+        With ``tts_prefetch`` (default) the NEXT sentence is rendered (fetched +
+        decoded — the slow part) while the current one plays, so there's no gap
+        between sentences. Returns the full spoken text.
         """
         self.stop.clear()
+        if getattr(self.cfg, "tts_prefetch", True):
+            return self._stream_pipelined(chunks, on_text)
+        return self._stream_sequential(chunks, on_text)
+
+    @staticmethod
+    def _close_source(chunks) -> None:
+        close = getattr(chunks, "close", None)   # tear down an interrupted generator
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                pass
+
+    def _stream_sequential(self, chunks, on_text=None) -> str:
+        """Simple path: render and play each sentence in turn (no prefetch)."""
         buf = ""
         full = ""
         try:
@@ -85,15 +102,71 @@ class Mouth:
                 self._speak_one(tail)
             return full
         finally:
-            # always settle the HUD reactor, even on barge-in/interrupt, and close
-            # the source generator so an interrupted brain stream is torn down cleanly
             self.hud.level(0.0)
-            close = getattr(chunks, "close", None)
-            if callable(close):
-                try:
-                    close()
-                except Exception:
-                    pass
+            self._close_source(chunks)
+
+    def _stream_pipelined(self, chunks, on_text=None) -> str:
+        """Prefetch path: a worker renders sentences ahead onto a small queue while
+        this thread plays them in order, so the slow edge-tts fetch of sentence N+1
+        is hidden behind the playback of sentence N."""
+        import queue
+        outq: "queue.Queue" = queue.Queue(maxsize=3)
+        DONE = object()
+        state = {"full": ""}
+
+        def producer():
+            buf = ""
+            try:
+                for piece in chunks:
+                    if self.stop.is_set():
+                        break
+                    if not piece:
+                        continue
+                    buf += piece
+                    state["full"] += piece
+                    if on_text:
+                        try:
+                            on_text(state["full"])
+                        except Exception:
+                            pass
+                    sentence, buf = self._take_sentence(buf)
+                    while sentence is not None:
+                        if self.stop.is_set():
+                            return
+                        outq.put(self._render(sentence))   # slow fetch, ahead of playback
+                        sentence, buf = self._take_sentence(buf)
+                tail = buf.strip()
+                if tail and not self.stop.is_set():
+                    outq.put(self._render(tail))
+            finally:
+                outq.put(DONE)
+                self._close_source(chunks)
+
+        worker = threading.Thread(target=producer, name="tts-render", daemon=True)
+        worker.start()
+        saw_done = False
+        try:
+            while True:
+                item = outq.get()
+                if item is DONE:
+                    saw_done = True
+                    break
+                if self.stop.is_set():
+                    continue                # drain the queue without playing
+                self._emit(item)
+        finally:
+            if not saw_done:
+                # abnormal exit (e.g. a playback error): stop the producer and drain
+                # so it can't block forever on a full queue.
+                self.stop.set()
+                while True:
+                    try:
+                        if outq.get(timeout=0.1) is DONE:
+                            break
+                    except queue.Empty:
+                        break
+            self.hud.level(0.0)
+        return state["full"]
 
     # ── sentence boundary detection ─────────────────────────────
     @staticmethod
@@ -121,32 +194,47 @@ class Mouth:
             return candidate, buf[end:]
         return None, buf
 
-    # ── speak a single utterance (edge → sapi fallback) ─────────
-    def _speak_one(self, text: str) -> bool:
+    # ── render (slow: fetch+decode) vs emit (play) ──────────────
+    def _speak_one(self, text: str) -> None:
+        """Render then play a single utterance (used by speak() and the
+        no-prefetch path)."""
+        self._emit(self._render(text))
+
+    def _render(self, text: str):
+        """The slow half — produce something playable. Returns ('edge', pcm) or
+        ('sapi', text) or None. Kept separate so it can run AHEAD of playback."""
         text = (text or "").strip()
         if not text:
-            return False
-        ok = False
+            return None
         if self.cfg.tts_engine == "edge":
-            ok = self._speak_edge(text)
-        if not ok:
-            self._speak_sapi(text)
-        return True
+            pcm = self._edge_render(text)
+            if pcm is not None:
+                return ("edge", pcm)
+        return ("sapi", text)          # offline engine, or edge failed → SAPI
 
-    # ── edge-tts (neural) ───────────────────────────────────────
-    def _speak_edge(self, text: str) -> bool:
+    def _emit(self, rendered) -> None:
+        """The fast half — play what _render produced."""
+        if not rendered:
+            return
+        kind, payload = rendered
+        if kind == "edge":
+            self._play(payload)
+        else:
+            self._speak_sapi(payload)
+
+    # ── edge-tts (neural) — fetch + decode to PCM ───────────────
+    def _edge_render(self, text: str):
         try:
             mp3 = asyncio.run(self._edge_bytes(text))
             if not mp3:
-                return False
+                return None
             pcm = self._decode(mp3)
             if pcm is None or len(pcm) == 0:
-                return False
-            self._play(pcm)
-            return True
+                return None
+            return pcm
         except Exception as e:
             print(f"[tts] edge failed ({e}); using offline voice")
-            return False
+            return None
 
     async def _edge_bytes(self, text: str) -> bytes:
         import edge_tts

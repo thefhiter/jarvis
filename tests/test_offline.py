@@ -393,40 +393,92 @@ def test_now_context():
 
 
 # ════════════════════════════════════════════════════════════════════════════
+def _mock_render_emit(m, spoken):
+    """Capture spoken sentences via the render/emit primitives (works on both the
+    prefetch and sequential paths)."""
+    m._render = lambda text: (text.strip() or None)
+    m._emit = lambda r: spoken.append(r) if r else None
+
+
 def test_speech_chunker():
-    section("speech — streaming sentence chunker")
+    section("speech — streaming sentence chunker (prefetch + sequential)")
     from core.speech import Mouth
-    m = Mouth(_cfg_speech(), FakeHud())
-    spoken = []
-    m._speak_one = lambda t: (spoken.append(t.strip()) or True)
 
     def toks(s, n=6):
         for i in range(0, len(s), n):
             yield s[i:i + n]
 
-    spoken.clear()
-    seen = []
-    full = m.speak_stream(toks("Paris. It is the capital of France. Lovely city!"),
-                          on_text=lambda f: seen.append(f))
-    check("multiple sentences spoken", len(spoken) >= 2, spoken)
-    check("full text returned intact", full == "Paris. It is the capital of France. Lovely city!")
-    check("subtitle grew", seen and len(seen[-1]) >= len(seen[0]))
+    for prefetch in (True, False):
+        cfg = _cfg_speech(); cfg.tts_prefetch = prefetch
+        m = Mouth(cfg, FakeHud())
+        spoken = []
+        _mock_render_emit(m, spoken)
+        tag = "prefetch" if prefetch else "sequential"
 
-    spoken.clear()
-    m.speak_stream(toks("Mr. Stark has 3.14 apples. Right?"))
-    check("no split on abbrev/decimal", spoken == ["Mr. Stark has 3.14 apples.", "Right?"], spoken)
+        seen = []
+        src = "Paris is lovely. It is the capital of France. What a city here!"
+        full = m.speak_stream(toks(src), on_text=lambda f: seen.append(f))
+        check(f"[{tag}] full text intact", full == src, repr(full))
+        check(f"[{tag}] sentences in order",
+              spoken == ["Paris is lovely.", "It is the capital of France.",
+                         "What a city here!"], spoken)
+        check(f"[{tag}] subtitle grew", bool(seen) and len(seen[-1]) >= len(seen[0]))
 
-    spoken.clear()
-    m.speak_stream(iter(["no terminal punct here"]))
-    check("tail flushed", spoken == ["no terminal punct here"], spoken)
+        spoken.clear()
+        m.speak_stream(toks("Mr. Stark has 3.14 apples. Right?"))
+        check(f"[{tag}] no split on abbrev/decimal",
+              spoken == ["Mr. Stark has 3.14 apples.", "Right?"], spoken)
 
-    spoken.clear()
+        spoken.clear()
+        m.speak_stream(iter(["no terminal punct here"]))
+        check(f"[{tag}] tail flushed", spoken == ["no terminal punct here"], spoken)
+
+    # interrupt is deterministic on the single-threaded sequential path
+    cfg = _cfg_speech(); cfg.tts_prefetch = False
+    m = Mouth(cfg, FakeHud()); spoken = []
+    _mock_render_emit(m, spoken)
     def interrupting():
         yield "First sentence here. "
         m.stop.set()
         yield "Second one should be dropped. "
     m.speak_stream(interrupting())
     check("interrupt stops after current", spoken == ["First sentence here."], spoken)
+
+
+def test_tts_pipeline():
+    section("speech — prefetch pipeline (order, sapi shape, interrupt drain)")
+    from core.speech import Mouth
+    cfg = _cfg_speech(); cfg.tts_prefetch = True
+    m = Mouth(cfg, FakeHud())
+
+    # real _render shape: ('edge', pcm) or ('sapi', text); _emit dispatches on it
+    played = []
+    m._play = lambda pcm: played.append(("edge", pcm))
+    m._speak_sapi = lambda text: played.append(("sapi", text))
+    m._edge_render = lambda text: [1, 2, 3]   # pretend edge produced PCM
+
+    src = ["This is one. ", "This is two. ", "This is three here."]
+    full = m.speak_stream(iter(src))
+    check("pipeline full text", full == "".join(src), repr(full))
+    check("pipeline emitted 3 in order via edge",
+          [k for k, _ in played] == ["edge", "edge", "edge"] and len(played) == 3, played)
+
+    # edge fails -> _render yields ('sapi', text) -> _emit uses SAPI
+    played.clear()
+    m._edge_render = lambda text: None
+    m.speak_stream(iter(["Only sapi here now."]))
+    check("pipeline falls back to sapi", played == [("sapi", "Only sapi here now.")], played)
+
+    # interrupt DURING playback -> remaining queued sentences are drained, not played
+    played.clear()
+    m._edge_render = lambda text: [1]
+    def play_then_stop(pcm):
+        played.append(pcm)
+        m.stop.set()           # user barges in while the first sentence plays
+    m._play = play_then_stop
+    m.speak_stream(iter(["First long sentence. ", "Second long sentence. ",
+                         "Third long sentence here."]))
+    check("interrupt mid-playback drains the rest", len(played) == 1, played)
 
 
 def _cfg_speech():
@@ -438,13 +490,16 @@ def _cfg_speech():
 def test_decimal_stream_split():
     section("speech — decimal not split across token boundaries")
     from core.speech import Mouth
-    m = Mouth(_cfg_speech(), FakeHud())
-    spoken = []
-    m._speak_one = lambda t: (spoken.append(t.strip()) or True)
-    # "3." arrives at a chunk edge, then "14" — must NOT be spoken as a sentence end
-    m.speak_stream(iter(["The value is 3", ".", "14 exactly. Done."]))
-    check("decimal kept intact", all("3.14" in s or "Done" in s for s in spoken) and
-          not any(s.endswith("is 3.") for s in spoken), spoken)
+    for prefetch in (True, False):
+        cfg = _cfg_speech(); cfg.tts_prefetch = prefetch
+        m = Mouth(cfg, FakeHud())
+        spoken = []
+        _mock_render_emit(m, spoken)
+        # "3." arrives at a chunk edge, then "14" — must NOT split the decimal
+        m.speak_stream(iter(["The value is 3", ".", "14 exactly. Done."]))
+        check(f"[{'prefetch' if prefetch else 'seq'}] decimal kept intact",
+              all("3.14" in s or "Done" in s for s in spoken)
+              and not any(s.endswith("is 3.") for s in spoken), spoken)
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -762,7 +817,8 @@ def main():
     print("JARVIS offline test suite")
     for t in (test_config, test_brain_anthropic_parser, test_groq_ollama_parsers,
               test_brain_chain_and_fallback, test_apply_config, test_vision,
-              test_now_context, test_speech_chunker, test_decimal_stream_split,
+              test_now_context, test_speech_chunker, test_tts_pipeline,
+              test_decimal_stream_split,
               test_stream_json_parser, test_math_safety, test_datecalc_and_ip,
               test_reminder_persistence, test_reminder_fire, test_skills, test_clap):
         try:

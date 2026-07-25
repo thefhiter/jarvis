@@ -62,6 +62,8 @@ class Config:
     tts_rate: str = "+8%"
     tts_pitch: str = "+0Hz"
     output_device: int | None = None
+    tts_prefetch: bool = True          # render the next sentence while the current plays
+                                       # (smoother speech); set False for the simple path
 
     # ── HUD / network ───────────────────────────────────────────
     ws_host: str = "127.0.0.1"

@@ -24,6 +24,7 @@
   "tts_rate": "+8%",
   "tts_pitch": "+0Hz",
   "output_device": null,
+  "tts_prefetch": true,
   "ws_host": "127.0.0.1",
   "ws_port": 8765,
   "hud_fullscreen": false,
