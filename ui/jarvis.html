@@ -202,10 +202,15 @@
       <div class="field">
         <label>Brain (AI model)</label>
         <select id="set_brain">
-          <option value="claude">Claude — your subscription (best)</option>
-          <option value="groq">Groq — free API (llama-3.3-70b)</option>
+          <option value="claude">Claude CLI — your subscription, no key (default)</option>
+          <option value="anthropic">Anthropic API — instant replies (fastest)</option>
+          <option value="groq">Groq — free API, very fast</option>
           <option value="ollama">Ollama — local, offline</option>
         </select>
+      </div>
+      <div class="field hide-field" id="f_anthropic">
+        <label>Anthropic API key <span style="opacity:.6">— makes JARVIS reply in ~1s</span></label>
+        <input id="set_anthropic_key" type="password" placeholder="paste key from console.anthropic.com (sk-ant-…)" />
       </div>
       <div class="field hide-field" id="f_groq">
         <label>Groq API key</label>
@@ -827,6 +832,22 @@ function typeJarvis(text){
     if(i>=text.length){ clearInterval(typeTimer); setTimeout(()=>{ if(cur.parentNode) cur.remove(); }, 1200); }
   }, 22);
 }
+/* live streamed reply — words arrive from the brain token by token, so we render
+   the text-so-far directly (with a blinking cursor) rather than re-typing it. */
+function streamJarvis(text){
+  clearInterval(typeTimer);
+  jarvisLine.innerHTML='';
+  const span=document.createElement('span'); span.textContent=text; jarvisLine.appendChild(span);
+  const cur=document.createElement('span'); cur.className='cursor'; jarvisLine.appendChild(cur);
+  window.__streaming=true;
+}
+function settleJarvis(text){
+  clearInterval(typeTimer);
+  jarvisLine.innerHTML='';
+  const span=document.createElement('span'); span.textContent=text; jarvisLine.appendChild(span);
+  const cur=document.createElement('span'); cur.className='cursor'; jarvisLine.appendChild(cur);
+  setTimeout(()=>{ if(cur.parentNode) cur.remove(); }, 1200);
+}
 
 /* ═══ clock + telemetry defaults ═══════════════════════════════ */
 function tickClock(){
@@ -904,7 +925,11 @@ function handle(m){
       }
       break;
     case 'user': showUser(m.text||''); break;
-    case 'jarvis': typeJarvis(m.text||''); break;
+    case 'jarvis_stream': streamJarvis(m.text||''); break;
+    case 'jarvis':
+      if(window.__streaming){ settleJarvis(m.text||''); window.__streaming=false; }
+      else typeJarvis(m.text||'');
+      break;
     case 'telemetry': setTelem(m.cpu, m.mem); break;
     case 'brain': document.getElementById('brainVal').textContent='BRAIN: '+(m.name||'----').toUpperCase(); break;
     case 'status': document.getElementById('online').textContent=(m.text||'SYSTEM ONLINE').toUpperCase(); break;
@@ -964,6 +989,7 @@ function applyConfigToPanel(c){
   }
   if('user_title' in c) $('set_title').value=c.user_title||'';
   if(c.has_groq_key) $('set_groq_key').placeholder='key saved — leave blank to keep';
+  if(c.has_anthropic_key) $('set_anthropic_key').placeholder='key saved — leave blank to keep';
   toggleBrainFields();
 }
 function setSelectValue(sel,val){
@@ -974,6 +1000,7 @@ function setSelectValue(sel,val){
 }
 function toggleBrainFields(){
   const b=$('set_brain').value;
+  $('f_anthropic').classList.toggle('hide-field', b!=='anthropic');
   $('f_groq').classList.toggle('hide-field', b!=='groq');
   $('f_ollama').classList.toggle('hide-field', b!=='ollama');
 }
@@ -992,6 +1019,7 @@ function saveSettings(){
   if(clapv!=='off') cfg.clap_count = parseInt(clapv);
   cfg.close_to_tray = $('set_closetray').value==='true';
   const gk=$('set_groq_key').value.trim(); if(gk) cfg.groq_api_key=gk;
+  const ak=$('set_anthropic_key').value.trim(); if(ak) cfg.anthropic_api_key=ak;
   if(ws&&ws.readyState===1) ws.send(JSON.stringify({type:'set_config', config:cfg}));
   closeSettings();
 }

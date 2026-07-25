@@ -41,7 +41,7 @@ def test_skills():
     if hasattr(os, "startfile"):
         os.startfile = noop                        # type: ignore[attr-defined]
     # import these BEFORE touching ctypes (their import chains need the real windll)
-    import pyautogui; pyautogui.hotkey = noop; pyautogui.typewrite = noop
+    import pyautogui; pyautogui.hotkey = noop; pyautogui.typewrite = noop; pyautogui.press = noop
     import screen_brightness_control as sbc
     sbc.set_brightness = noop; sbc.get_brightness = lambda *a, **k: [50]
     import ctypes
@@ -69,6 +69,11 @@ def test_skills():
         "read my notes", "set a timer for 2 minutes", "what's the weather",
         "copy hello world to the clipboard", "lock the computer",
         "thank you jarvis", "hello jarvis",
+        # new powers
+        "pause", "next track", "play music", "close notepad",
+        "what is 15 percent of 240", "calculate 12 times 8", "square root of 144",
+        "convert 10 km to miles", "spell serendipity", "flip a coin", "roll a dice",
+        "remind me to stretch in 10 minutes", "set an alarm for 7 am", "list my reminders",
     ]
     print("── skills matcher ──")
     hits = 0
@@ -94,6 +99,11 @@ def test_brain():
     print(f"  engine used : {b.active}")
     print(f"  reply       : {reply}")
     assert reply and "paris" in reply.lower(), "brain did not answer correctly"
+    # follow-up exercises the persistent session's memory + speed
+    follow = b.ask("And in which country is it? One short sentence.")
+    print(f"  follow-up   : {follow}")
+    assert follow and "france" in follow.lower(), "brain lost conversational context"
+    b.close()
     print("  brain: OK")
 
 

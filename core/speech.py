@@ -9,15 +9,25 @@ or the network is unavailable.
 from __future__ import annotations
 
 import asyncio
+import re
 import shutil
 import subprocess
 import threading
+from typing import Callable, Iterable, Optional
 import numpy as np
 import sounddevice as sd
 
 FFMPEG = shutil.which("ffmpeg") or "ffmpeg"
 PLAY_SR = 22050
 HOP = 1024
+
+# sentence-final punctuation followed by whitespace/end — where we can safely start
+# speaking without waiting for the whole answer. We avoid splitting mid-decimal or
+# on common abbreviations so JARVIS doesn't stutter.
+_SENT_END = re.compile(r"([.!?…]+)(\s+|$)")
+_ABBREV = {"mr", "mrs", "ms", "dr", "sir", "st", "vs", "e.g", "i.e", "etc", "no",
+           "fig", "gen", "col", "sgt", "jr", "sr", "prof"}
+_MIN_SENTENCE = 12   # don't flush tiny fragments; let them accumulate
 
 
 class Mouth:
@@ -30,19 +40,98 @@ class Mouth:
     def interrupt(self) -> None:
         self.stop.set()
 
-    # ── public ──────────────────────────────────────────────────
+    # ── public: speak a finished string ─────────────────────────
     def speak(self, text: str) -> None:
         text = (text or "").strip()
         if not text:
             return
         self.stop.clear()
-        engine = self.cfg.tts_engine
+        self._speak_one(text)
+        self.hud.level(0.0)
+
+    # ── public: speak a *stream* of text as it is generated ─────
+    def speak_stream(self, chunks: Iterable[str],
+                     on_text: Optional[Callable[[str], None]] = None) -> str:
+        """Consume an iterator of text pieces, speaking each complete sentence the
+        moment it is ready while the rest is still being generated. ``on_text`` (if
+        given) is called with the full text-so-far for a live HUD subtitle.
+
+        Returns the full spoken text.
+        """
+        self.stop.clear()
+        buf = ""
+        full = ""
+        try:
+            for piece in chunks:
+                if self.stop.is_set():
+                    break
+                if not piece:
+                    continue
+                buf += piece
+                full += piece
+                if on_text:
+                    try:
+                        on_text(full)
+                    except Exception:
+                        pass
+                sentence, buf = self._take_sentence(buf)
+                while sentence is not None:
+                    if self.stop.is_set():
+                        return full
+                    self._speak_one(sentence)
+                    sentence, buf = self._take_sentence(buf)
+            tail = buf.strip()
+            if tail and not self.stop.is_set():
+                self._speak_one(tail)
+            return full
+        finally:
+            # always settle the HUD reactor, even on barge-in/interrupt, and close
+            # the source generator so an interrupted brain stream is torn down cleanly
+            self.hud.level(0.0)
+            close = getattr(chunks, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
+
+    # ── sentence boundary detection ─────────────────────────────
+    @staticmethod
+    def _take_sentence(buf: str):
+        """Return (sentence, remainder) if a complete, speakable sentence is at the
+        front of buf, else (None, buf)."""
+        for m in _SENT_END.finditer(buf):
+            end = m.end()
+            candidate = buf[:end].strip()
+            if len(candidate) < _MIN_SENTENCE:
+                continue
+            # don't split on an abbreviation like "Mr." or a decimal like "3.14"
+            word = re.split(r"[\s]", buf[:m.start()])[-1].lower().rstrip(".")
+            if word in _ABBREV:
+                continue
+            before = buf[m.start() - 1] if m.start() > 0 else ""
+            after = buf[end] if end < len(buf) else ""
+            if before.isdigit() and after.isdigit():
+                continue
+            # a '.' at the very end of the current buffer, right after a digit, may
+            # be a decimal point whose fraction arrives in the next token — defer.
+            # (The end-of-stream tail flush still speaks it, so nothing is lost.)
+            if end >= len(buf) and before.isdigit():
+                continue
+            return candidate, buf[end:]
+        return None, buf
+
+    # ── speak a single utterance (edge → sapi fallback) ─────────
+    def _speak_one(self, text: str) -> bool:
+        text = (text or "").strip()
+        if not text:
+            return False
         ok = False
-        if engine == "edge":
+        if self.cfg.tts_engine == "edge":
             ok = self._speak_edge(text)
         if not ok:
             self._speak_sapi(text)
-        self.hud.level(0.0)
+        return True
 
     # ── edge-tts (neural) ───────────────────────────────────────
     def _speak_edge(self, text: str) -> bool:

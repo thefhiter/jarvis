@@ -21,11 +21,14 @@ class Config:
     assistant_name: str = "Jarvis"
 
     # ── brain (LLM) ─────────────────────────────────────────────
-    # "claude"  -> uses the locally installed Claude Code CLI (your subscription)
-    # "groq"    -> free Groq API (needs groq_api_key)
-    # "ollama"  -> local Ollama server
+    # "anthropic" -> Claude Messages API directly (needs anthropic_api_key). Fastest.
+    # "claude"    -> locally installed Claude Code CLI (your subscription, no key)
+    # "groq"      -> free Groq API (needs groq_api_key). Sub-second.
+    # "ollama"    -> local Ollama server (offline)
     brain: str = "claude"
-    claude_model: str = ""             # "" = CLI default; else e.g. "claude-sonnet-4-6"
+    anthropic_api_key: str = ""        # get one at console.anthropic.com → instant, cheap replies
+    anthropic_model: str = "claude-haiku-4-5-20251001"
+    claude_model: str = "claude-haiku-4-5"   # CLI model; Haiku = fast + cheap for short butler replies
     groq_api_key: str = ""
     groq_model: str = "llama-3.3-70b-versatile"
     ollama_model: str = "llama3.2"
@@ -89,6 +92,7 @@ def load() -> "Config":
             print(f"[config] failed to read config.json ({e}); using defaults")
     else:
         cfg.save()  # write a template on first run
-    # allow env override for the Groq key
+    # allow env overrides for the API keys (env wins if set)
     cfg.groq_api_key = os.environ.get("GROQ_API_KEY", cfg.groq_api_key)
+    cfg.anthropic_api_key = os.environ.get("ANTHROPIC_API_KEY", cfg.anthropic_api_key)
     return cfg

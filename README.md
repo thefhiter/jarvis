@@ -19,8 +19,12 @@ answers out loud while a glowing arc-reactor HUD reacts to the conversation in r
 
 - 🎙 **Wake word** — “hey jarvis”, detected **locally** (openWakeWord, no cloud, no key).
 - 🧠 **Speech-to-text** — **local** faster-whisper (`base`, int8). Nothing leaves your PC.
-- 💬 **The brain** — routes to the **Claude Code CLI** (your subscription, no API key), with
-  **Groq** and **Ollama** as pluggable fallbacks.
+- 💬 **The brain** — a warm, quick-witted personality that **streams its reply** so JARVIS
+  starts *speaking the first sentence* while it's still thinking. Four pluggable back-ends,
+  auto-selected best-first:
+  **Anthropic API** (paste a key → ~1 s instant replies) → **Claude Code CLI** (your
+  subscription, no key, kept warm in a persistent session so turns cost ~3 s instead of ~30 s)
+  → **Groq** (free, sub-second) → **Ollama** (offline). It also knows the current date & time.
 - 🗣 **Voice** — premium neural **edge-tts** (`en-GB-RyanNeural`) with an offline **SAPI5** fallback.
 - 🌀 **HUD** — a frameless, always-on-top holographic arc reactor: rotating rings, an
   audio-reactive waveform, live subtitles, telemetry and a boot sequence. Pure canvas, no CDNs.
@@ -50,11 +54,22 @@ answers out loud while a glowing arc-reactor HUD reacts to the conversation in r
 | “take a screenshot” | saves to `Pictures/Jarvis` |
 | “system status”, “battery status” | CPU / memory / battery |
 | “minimize everything”, “maximize”, “switch window” | window control |
+| “pause”, “next track”, “previous song”, “play music” | media transport (media keys) |
+| “close notepad”, “quit spotify” | closes an app (taskkill) |
+| “what’s 15 percent of 240”, “12 times 8”, “square root of 144” | mental arithmetic |
+| “convert 10 km to miles”, “100 F to celsius”, “5 kg to pounds” | unit conversion |
+| “define serendipity”, “what does ubiquitous mean” | dictionary |
+| “what’s the news / headlines” | top world headlines (BBC RSS) |
+| “tell me a joke”, “flip a coin”, “roll a d20” | fun & random |
+| “spell serendipity” | spells a word out |
 | “type hello world” | types for you |
 | “copy X to the clipboard”, “read my clipboard” | clipboard |
 | “make a note buy milk”, “read my notes” | notes → `notes.txt` |
 | “set a timer for 5 minutes” | spoken timer alert |
+| “remind me to call mum in 10 minutes”, “remind me to stretch at 3 pm” | reminders |
+| “set an alarm for 7 am”, “list my reminders”, “cancel all reminders” | alarms & registry |
 | “what’s the weather [in Tunis]” | live weather (wttr.in) |
+| “empty the recycle bin” | clears the recycle bin |
 | “lock / sleep / shut down / restart the computer” | power (guarded) |
 | “run a task: create a python script that …” | agentic Claude Code in `workspace/` |
 | “who are you”, “what can you do” | JARVIS introduces itself |
@@ -88,7 +103,10 @@ All settings live in **`config.json`** (created on first run). Highlights:
 
 | Key | Default | Meaning |
 |-----|---------|---------|
-| `brain` | `"claude"` | `claude` \| `groq` \| `ollama` |
+| `brain` | `"claude"` | `anthropic` \| `claude` \| `groq` \| `ollama` |
+| `anthropic_api_key` | `""` | key from console.anthropic.com (or `ANTHROPIC_API_KEY` env) → **instant replies**; auto-preferred when set |
+| `anthropic_model` | `"claude-haiku-4-5-20251001"` | model for the direct API brain |
+| `claude_model` | `"claude-haiku-4-5"` | model for the CLI brain (Haiku = fast + cheap) |
 | `groq_api_key` | `""` | free key from console.groq.com (or set `GROQ_API_KEY` env) |
 | `ollama_model` | `"llama3.2"` | model name if using local Ollama |
 | `whisper_model` | `"base"` | `tiny` \| `base` \| `small` \| `medium` |
@@ -116,7 +134,17 @@ core/
 ui/jarvis.html         the cinematic HUD (self-contained canvas, no CDNs)
 demo_hud.py            preview the HUD without a microphone
 setup_models.py        one-time model download
-tests/smoke.py         headless verification (skills + brain)
+tests/test_offline.py  fast, no-hardware suite: brain fallback, Anthropic SSE parser,
+                       streaming sentence-chunker, skills matcher, config, clap detector
+tests/hud_smoke.mjs    loads ui/jarvis.html headlessly (node + mocked DOM) and drives it
+tests/smoke.py         live integration: real Claude brain + skills matcher
+```
+
+**Testing:** run everything with `run-tests.bat`, or individually:
+```bat
+.venv\Scripts\python tests\test_offline.py    :: 90 checks, no mic/network, < 2s
+node tests\hud_smoke.mjs                       :: HUD renders + handles every message
+.venv\Scripts\python tests\smoke.py            :: real brain (needs network)
 ```
 
 **Flow:** `idle → (wake / click / Space) → listening → capture → thinking →

@@ -83,6 +83,10 @@ def main() -> int:
             assistant.mouth.interrupt()
         except Exception:
             pass
+        try:
+            assistant.brain.close()   # reap the persistent claude child promptly
+        except Exception:
+            pass
         if tray_ref["tray"]:
             tray_ref["tray"].stop()
         try:

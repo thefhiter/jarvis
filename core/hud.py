@@ -82,6 +82,7 @@ class Hud:
     def spectrum(self, bins, level=0.0):     self.send({"type": "spectrum", "bins": list(bins), "level": float(level)})
     def user(self, text: str) -> None:       self.send({"type": "user", "text": text})
     def jarvis(self, text: str) -> None:     self.send({"type": "jarvis", "text": text})
+    def jarvis_stream(self, text: str) -> None: self.send({"type": "jarvis_stream", "text": text})
     def telemetry(self, cpu, mem) -> None:   self.send({"type": "telemetry", "cpu": cpu, "mem": mem})
     def brain(self, name: str) -> None:      self.send({"type": "brain", "name": name})
     def status(self, text: str) -> None:     self.send({"type": "status", "text": text})

@@ -12,7 +12,7 @@ from __future__ import annotations
 import threading
 import time
 
-from .brain import Brain, SYSTEM
+from .brain import Brain
 from .skills import Skills
 from .speech import Mouth
 from .voice import Ears
@@ -91,12 +91,13 @@ class Assistant:
                 reply = self.skills.handle(text)
             except Exception as e:
                 print(f"[assistant] skill error: {e}")
-            if reply is None:                    # not a local command → ask the brain
-                reply = self.brain.ask(text)
-            if reply:
-                self._say(reply)
-            else:
-                self.hud.state("idle")
+            if reply is not None:                # deterministic skill answered
+                if reply:
+                    self._say(reply)
+                else:
+                    self.hud.state("idle")
+            else:                                # escalate to the brain (streamed)
+                self._say_stream(self.brain.ask_stream(text))
             if self.skills.should_exit:
                 self.stop.set()
                 if self.on_quit:
@@ -109,12 +110,30 @@ class Assistant:
         self.mouth.speak(text)
         self.hud.state("idle")
 
+    def _say_stream(self, chunks) -> None:
+        """Speak a streamed brain reply sentence-by-sentence, updating the HUD
+        subtitle live as words arrive. Stays in 'thinking' until the first token."""
+        state = {"speaking": False}
+
+        def on_text(full: str) -> None:
+            if not state["speaking"]:
+                state["speaking"] = True
+                self.hud.state("speaking")
+            self.hud.jarvis_stream(full)
+
+        full = self.mouth.speak_stream(chunks, on_text=on_text)
+        full = (full or "").strip()
+        if full:
+            self.hud.jarvis(full)
+        self.hud.state("idle")
+
     # ── live settings ───────────────────────────────────────────
     def _send_config(self) -> None:
         c = self.cfg
         self.hud.send({"type": "config", "config": {
             "brain": c.brain, "groq_model": c.groq_model, "ollama_model": c.ollama_model,
             "has_groq_key": bool(c.groq_api_key),
+            "has_anthropic_key": bool(c.anthropic_api_key), "anthropic_model": c.anthropic_model,
             "whisper_model": c.whisper_model, "tts_engine": c.tts_engine, "tts_voice": c.tts_voice,
             "tts_rate": c.tts_rate, "wakeword_threshold": c.wakeword_threshold,
             "user_title": c.user_title, "enable_voice": c.enable_voice,
@@ -127,8 +146,13 @@ class Assistant:
     def _apply_config(self, d: dict) -> None:
         c = self.cfg
         changed = []
-        if d.get("brain") in ("claude", "groq", "ollama"):
+        if d.get("brain") in ("anthropic", "claude", "groq", "ollama"):
             c.brain = d["brain"]; self.brain.active = d["brain"]; changed.append("brain")
+        if "anthropic_api_key" in d and isinstance(d["anthropic_api_key"], str):
+            c.anthropic_api_key = d["anthropic_api_key"].strip()
+            changed.append("Anthropic key")
+        if d.get("anthropic_model"):
+            c.anthropic_model = d["anthropic_model"]
         if d.get("groq_api_key"):
             c.groq_api_key = d["groq_api_key"]
         if d.get("groq_model"):
@@ -143,7 +167,7 @@ class Assistant:
             c.tts_rate = d["tts_rate"].strip()
         if isinstance(d.get("user_title"), str) and d["user_title"].strip():
             c.user_title = d["user_title"].strip()
-            self.brain._system = SYSTEM.format(title=c.user_title)
+            self.brain.set_title(c.user_title)
             changed.append("form of address")
         if "wakeword_threshold" in d:
             try:
@@ -198,25 +222,32 @@ class Assistant:
 
     # ── main loop ───────────────────────────────────────────────
     def run(self) -> None:
-        self.hud.status("initialising")
-        if self.cfg.enable_voice:
-            self.ears.load()
-            self.ears.open_stream()
-        self.hud.state("idle")
-        threading.Thread(target=self._telemetry_loop, name="telemetry", daemon=True).start()
-        self._send_config()
+        # try/finally guarantees shutdown() (which reaps the persistent Claude
+        # child) runs even if mic/model/TTS init raises — otherwise a crash here
+        # would orphan a heavy claude.exe subprocess.
+        try:
+            self.hud.status("initialising")
+            # warm the brain (spawns + primes the persistent Claude session) in the
+            # background so the first spoken question doesn't pay the ~20 s cold-start
+            threading.Thread(target=self.brain.warmup, name="brain-warmup", daemon=True).start()
+            if self.cfg.enable_voice:
+                self.ears.load()
+                self.ears.open_stream()
+            self.hud.state("idle")
+            threading.Thread(target=self._telemetry_loop, name="telemetry", daemon=True).start()
+            self._send_config()
 
-        time.sleep(1.2)   # let the HUD boot animation breathe
-        mode = "awaiting your command" if self.cfg.enable_voice else "in keyboard mode"
-        self._say(f"Good day, {self.cfg.user_title}. JARVIS online and {mode}.")
+            time.sleep(1.2)   # let the HUD boot animation breathe
+            mode = "awaiting your command" if self.cfg.enable_voice else "in keyboard mode"
+            self._say(f"Good day, {self.cfg.user_title}. JARVIS online and {mode}.")
 
-        if self.cfg.enable_voice:
-            self._voice_loop()
-        else:
-            while not self.stop.is_set():   # text-only: turns arrive via the HUD bar
-                time.sleep(0.15)
-
-        self.shutdown()
+            if self.cfg.enable_voice:
+                self._voice_loop()
+            else:
+                while not self.stop.is_set():   # text-only: turns arrive via the HUD bar
+                    time.sleep(0.15)
+        finally:
+            self.shutdown()
 
     def _voice_loop(self) -> None:
         while not self.stop.is_set():
@@ -238,3 +269,7 @@ class Assistant:
         self.stop.set()
         self.hud.state("offline")
         self.ears.close()
+        try:
+            self.brain.close()
+        except Exception:
+            pass
