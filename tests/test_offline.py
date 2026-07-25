@@ -384,6 +384,12 @@ def test_now_context():
     check("context mentions the year", "20" in ctx and "right now it is" in ctx.lower())
     msgs = b._messages("hello")
     check("messages inject context into user turn", "right now it is" in msgs[-1]["content"].lower())
+    # forget() must clear BOTH history and the persistent session (via _stale)
+    b.history = [("user", "x"), ("assistant", "y")]
+    b._stale = False
+    b.forget()
+    check("forget clears history", not b.history)
+    check("forget rebuilds persistent session (stale)", b._stale is True)
 
 
 # ════════════════════════════════════════════════════════════════════════════

@@ -468,6 +468,9 @@ class Brain:
 
     def forget(self) -> None:
         self.history.clear()
+        # the persistent Claude session keeps its OWN conversation memory, so a
+        # true "forget" must rebuild it — mark it stale (rebuilt on the next turn).
+        self._stale = True
 
     def _context(self) -> str:
         if not self.history:
