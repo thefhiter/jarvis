@@ -37,6 +37,16 @@ except Exception:
 import truststore
 truststore.inject_into_ssl()
 
+# redirect reminder persistence to a scratch file so tests never touch the real
+# reminders.json (Skills loads it at construction time).
+import tempfile
+import core.skills as _skills_mod
+_skills_mod.REMINDERS_FILE = Path(tempfile.gettempdir()) / "jarvis_reminders_test.json"
+try:
+    _skills_mod.REMINDERS_FILE.unlink()
+except Exception:
+    pass
+
 # ── minimal test harness ────────────────────────────────────────────────────
 PASS = 0
 FAIL = 0
@@ -203,6 +213,98 @@ def test_brain_chain_and_fallback():
     b5._stream_anthropic = good
     got = "".join(b5.ask_stream("hi"))
     check("partial commit, no fallback duplicate", got == "Half a thought", repr(got))
+
+
+def test_groq_ollama_parsers():
+    section("brain — Groq (OpenAI SSE) + Ollama (JSONL) streaming parsers")
+    from core.brain import Brain
+    import core.brain as B
+
+    # Groq: OpenAI-style SSE with [DONE] sentinel
+    groq_lines = [
+        'data: {"choices":[{"delta":{"role":"assistant"}}]}',
+        'data: {"choices":[{"delta":{"content":"Hi"}}]}',
+        'data: {"choices":[{"delta":{"content":" there."}}]}',
+        'data: [DONE]',
+        'data: {"choices":[{"delta":{"content":"IGNORED"}}]}',
+    ]
+
+    class GResp:
+        status_code = 200
+        def iter_lines(self, decode_unicode=True): return iter(groq_lines)
+    c = _cfg(); c.groq_api_key = "k"
+    b = Brain(c)
+    orig = B.requests.post
+    B.requests.post = lambda *a, **k: GResp()
+    try:
+        out = "".join(b._stream_groq("hi"))
+    finally:
+        B.requests.post = orig
+    check("groq parses to [DONE]", out == "Hi there.", repr(out))
+
+    # Groq: no key -> raises (so the chain falls through)
+    b2 = Brain(_cfg())
+    raised = False
+    try:
+        list(b2._stream_groq("hi"))
+    except Exception as e:
+        raised = "groq" in str(e).lower()
+    check("groq without key raises", raised)
+
+    # Ollama: newline-delimited JSON, done flag stops
+    oll_lines = [
+        '{"message":{"content":"Lo"},"done":false}',
+        '{"message":{"content":"cal."},"done":false}',
+        '{"message":{"content":""},"done":true}',
+        '{"message":{"content":"AFTER"},"done":false}',
+    ]
+
+    class OResp:
+        status_code = 200
+        def iter_lines(self, decode_unicode=True): return iter(oll_lines)
+    b3 = Brain(_cfg())
+    B.requests.post = lambda *a, **k: OResp()
+    try:
+        out = "".join(b3._stream_ollama("hi"))
+    finally:
+        B.requests.post = orig
+    check("ollama parses to done", out == "Local.", repr(out))
+
+
+def test_apply_config():
+    section("assistant — live settings apply/persist/clamp")
+    import sys as _sys, types as _types
+    _sys.modules.setdefault("sounddevice", _types.ModuleType("sounddevice"))
+    _sys.modules["sounddevice"].InputStream = _sys.modules["sounddevice"].OutputStream = object
+    _sys.modules["sounddevice"].sleep = lambda *a, **k: None
+    from core import config
+    from core.hud import Hud
+    from core.assistant import Assistant
+    # isolate config writes to a temp file
+    orig_path = config.CONFIG_PATH
+    tmp = ROOT / "config.__apply_test__.json"
+    config.CONFIG_PATH = tmp
+    try:
+        cfg = config.load()
+        a = Assistant(cfg, Hud(cfg.ws_host, cfg.ws_port))
+        a._apply_config({"brain": "anthropic", "anthropic_api_key": "sk-ant-X",
+                         "user_title": "captain", "wakeword_threshold": 9.9,
+                         "clap_sensitivity": 99.0, "tts_voice": "en-US-GuyNeural"})
+        check("brain switched", cfg.brain == "anthropic")
+        check("anthropic key stored", cfg.anthropic_api_key == "sk-ant-X")
+        check("title propagated to brain persona", "captain" in a.brain._system)
+        check("wake threshold clamped <=0.95", cfg.wakeword_threshold <= 0.95, cfg.wakeword_threshold)
+        check("clap sensitivity clamped <=0.6", cfg.clap_sensitivity <= 0.6, cfg.clap_sensitivity)
+        check("persisted to disk", tmp.exists())
+        reloaded = config.load()
+        check("reload keeps brain", reloaded.brain == "anthropic")
+        a.brain.close()
+    finally:
+        config.CONFIG_PATH = orig_path
+        try:
+            tmp.unlink()
+        except Exception:
+            pass
 
 
 def test_now_context():
@@ -389,6 +491,31 @@ def test_datecalc_and_ip():
         S.requests.get = orig
 
 
+def test_reminder_persistence():
+    section("skills — reminders/alarms survive a restart")
+    import core.skills as S
+    from core import config
+    from core.skills import Skills
+    try:
+        S.REMINDERS_FILE.unlink()
+    except Exception:
+        pass
+    sk1 = Skills(config.load(), FakeHud(), say=lambda t: None)
+    sk1._schedule(3600, "Reminder, sir: standup.", "reminder to standup", "reminder")
+    sk1._schedule(60, "timer up", "1-min timer", "timer")   # timers are NOT persisted
+    check("reminders file written", S.REMINDERS_FILE.exists())
+    sk2 = Skills(config.load(), FakeHud(), say=lambda t: None)   # simulate a restart
+    kinds = sorted(r["kind"] for r in sk2._reminders)
+    check("reloads durable reminder, drops timer", kinds == ["reminder"], kinds)
+    check("reloaded label preserved", any("standup" in r["label"] for r in sk2._reminders))
+    for sk in (sk1, sk2):
+        sk.handle("cancel all reminders")
+    try:
+        S.REMINDERS_FILE.unlink()
+    except Exception:
+        pass
+
+
 def test_reminder_fire():
     section("skills — reminder fire() deregisters + speaks (Timer callback)")
     import core.skills as S
@@ -558,10 +685,11 @@ def test_clap():
 # ════════════════════════════════════════════════════════════════════════════
 def main():
     print("JARVIS offline test suite")
-    for t in (test_config, test_brain_anthropic_parser, test_brain_chain_and_fallback,
+    for t in (test_config, test_brain_anthropic_parser, test_groq_ollama_parsers,
+              test_brain_chain_and_fallback, test_apply_config,
               test_now_context, test_speech_chunker, test_decimal_stream_split,
               test_stream_json_parser, test_math_safety, test_datecalc_and_ip,
-              test_reminder_fire, test_skills, test_clap):
+              test_reminder_persistence, test_reminder_fire, test_skills, test_clap):
         try:
             t()
         except Exception as e:

@@ -7,6 +7,7 @@ answer. Handlers return the sentence JARVIS should say back.
 from __future__ import annotations
 
 import ast
+import json
 import math
 import operator
 import os
@@ -23,6 +24,7 @@ import requests
 
 ROOT = Path(__file__).resolve().parent.parent
 NOTES = ROOT / "notes.txt"
+REMINDERS_FILE = ROOT / "reminders.json"   # reminders/alarms survive a restart
 
 # name -> launcher.  urls open in the browser, others are Windows commands.
 APPS = {
@@ -174,6 +176,7 @@ class Skills:
         self._reminders: list[dict] = []   # active timers/reminders/alarms
         self._rid = 0
         self._rlock = threading.Lock()     # registry touched from Timer threads too
+        self._load_persisted()             # restore reminders/alarms from a prior run
 
     # ── main dispatch ───────────────────────────────────────────
     def handle(self, text: str):
@@ -529,6 +532,7 @@ class Skills:
         def fire():
             with self._rlock:
                 self._reminders[:] = [r for r in self._reminders if r["id"] != rid]
+                self._persist()
             self.say(spoken)
         timer = threading.Timer(max(0.0, secs), fire)
         timer.daemon = True
@@ -536,9 +540,39 @@ class Skills:
             self._rid += 1
             rid = self._rid
             self._reminders.append({"id": rid, "kind": kind, "label": label,
-                                    "due": due, "timer": timer})
+                                    "spoken": spoken, "due": due, "timer": timer})
+            self._persist()
         timer.start()
         return rid
+
+    # ── persistence (reminders & alarms survive a restart) ──────
+    def _persist(self) -> None:
+        """Write the durable (reminder/alarm) entries to disk. Call under _rlock."""
+        keep = [{"kind": r["kind"], "label": r["label"], "spoken": r.get("spoken", ""),
+                 "due": r["due"].isoformat()}
+                for r in self._reminders if r["kind"] in ("reminder", "alarm")]
+        try:
+            REMINDERS_FILE.write_text(json.dumps(keep, indent=2), encoding="utf-8")
+        except Exception as e:
+            print(f"[skills] could not save reminders: {e}")
+
+    def _load_persisted(self) -> None:
+        """Reschedule still-future reminders/alarms from a previous session; drop
+        any that fell due while JARVIS was off."""
+        try:
+            data = json.loads(REMINDERS_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            return
+        now = datetime.now()
+        for e in data if isinstance(data, list) else []:
+            try:
+                due = datetime.fromisoformat(e["due"])
+            except Exception:
+                continue
+            if due <= now:
+                continue
+            self._schedule((due - now).total_seconds(), e.get("spoken", ""),
+                           e.get("label", "reminder"), e.get("kind", "reminder"))
 
     def _pending(self, t) -> str | None:
         if not re.search(r"\b(list|show|what are|any)\b.*\b(timer|timers|reminder|reminders|alarm|alarms)\b", t):
@@ -556,6 +590,7 @@ class Skills:
         with self._rlock:
             pending = list(self._reminders)
             self._reminders.clear()
+            self._persist()
         for r in pending:
             try:
                 r["timer"].cancel()

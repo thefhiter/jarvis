@@ -9,6 +9,7 @@ __pycache__/
 # runtime / user data
 logs/
 notes.txt
+reminders.json
 # config.json may contain a Groq key — ship config.example.json instead
 config.json
 # agentic task scratch space
