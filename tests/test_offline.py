@@ -307,6 +307,75 @@ def test_apply_config():
             pass
 
 
+def test_vision():
+    section("brain + skills — screen vision (Anthropic)")
+    from core.brain import Brain
+    import core.brain as B
+
+    # Brain.ask_image builds a correct vision request and parses the reply
+    captured = {}
+    class VResp:
+        status_code = 200
+        def json(self): return {"content": [{"type": "text", "text": "A code editor, sir."}]}
+    def fake_post(url, **kw):
+        captured["url"] = url; captured["body"] = kw.get("json")
+        return VResp()
+    c = _cfg(); c.anthropic_api_key = "sk-ant-v"
+    b = Brain(c)
+    orig = B.requests.post
+    B.requests.post = fake_post
+    try:
+        out = b.ask_image("What is on screen?", "QUJD")
+    finally:
+        B.requests.post = orig
+    check("vision reply parsed", out == "A code editor, sir.", repr(out))
+    content = captured["body"]["messages"][0]["content"]
+    check("request has an image block", content[0]["type"] == "image"
+          and content[0]["source"]["data"] == "QUJD")
+    check("request has the question text", content[1]["type"] == "text")
+    # no key -> raises (assistant turns this into a 'add a key' prompt)
+    b2 = Brain(_cfg())
+    raised = False
+    try:
+        b2.ask_image("x", "QUJD")
+    except Exception:
+        raised = True
+    check("vision without key raises", raised)
+
+    # skill: triggers only for screen phrases, routes to the describe_image callback
+    import core.skills as S
+    from core import config
+    from core.skills import Skills
+    calls = {"n": 0}
+    def describe(q, b64):
+        calls["n"] += 1
+        return "I see a desktop, sir."
+    sk = Skills(config.load(), FakeHud(), say=lambda t: None, describe_image=describe)
+    # patch ImageGrab so no real screen is captured in CI/headless
+    import types as _t
+    fake_pil = _t.ModuleType("PIL"); fake_grab = _t.ModuleType("PIL.ImageGrab")
+    class _Img:
+        def thumbnail(self, *a): pass
+        def convert(self, *a): return self
+        def save(self, buf, **k): buf.write(b"\xff\xd8\xff")   # minimal JPEG-ish bytes
+    fake_grab.grab = lambda *a, **k: _Img()
+    fake_pil.ImageGrab = fake_grab
+    _saved = (sys.modules.get("PIL"), sys.modules.get("PIL.ImageGrab"))
+    sys.modules["PIL"] = fake_pil; sys.modules["PIL.ImageGrab"] = fake_grab
+    try:
+        r = sk.handle("what's on my screen")
+        check("vision skill routes to callback", r == "I see a desktop, sir." and calls["n"] == 1, r)
+        check("non-screen phrase ignored by vision", sk._vision("what is the weather", "") is None)
+    finally:
+        if _saved[0] is not None: sys.modules["PIL"] = _saved[0]
+        else: sys.modules.pop("PIL", None)
+        if _saved[1] is not None: sys.modules["PIL.ImageGrab"] = _saved[1]
+        else: sys.modules.pop("PIL.ImageGrab", None)
+    # without the callback wired, vision falls through to the brain (None)
+    sk2 = Skills(config.load(), FakeHud(), say=lambda t: None)
+    check("vision no-op without callback", sk2._vision("what's on my screen", "") is None)
+
+
 def test_now_context():
     section("brain — dynamic time context")
     from core.brain import Brain
@@ -686,7 +755,7 @@ def test_clap():
 def main():
     print("JARVIS offline test suite")
     for t in (test_config, test_brain_anthropic_parser, test_groq_ollama_parsers,
-              test_brain_chain_and_fallback, test_apply_config,
+              test_brain_chain_and_fallback, test_apply_config, test_vision,
               test_now_context, test_speech_chunker, test_decimal_stream_split,
               test_stream_json_parser, test_math_safety, test_datecalc_and_ip,
               test_reminder_persistence, test_reminder_fire, test_skills, test_clap):

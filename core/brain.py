@@ -407,6 +407,43 @@ class Brain:
     def ask(self, prompt: str) -> str:
         return "".join(self.ask_stream(prompt)).strip()
 
+    # ── public: vision (Anthropic API only) ─────────────────────
+    def ask_image(self, question: str, image_b64: str,
+                  media_type: str = "image/jpeg") -> str:
+        """Answer a question about an image (e.g. a screenshot). Uses the Anthropic
+        Messages API — the only vision-capable backend here — so it needs a key."""
+        key = self._anthropic_key()
+        if not key:
+            raise BrainError("no anthropic api key")
+        model = getattr(self.cfg, "anthropic_model", "") or "claude-haiku-4-5-20251001"
+        body = {
+            "model": model, "max_tokens": DEFAULT_MAX_TOKENS, "system": self._system,
+            "messages": [{"role": "user", "content": [
+                {"type": "image", "source": {"type": "base64",
+                 "media_type": media_type, "data": image_b64}},
+                {"type": "text", "text": self._now_context() + question},
+            ]}],
+        }
+        try:
+            r = requests.post(ANTHROPIC_URL, json=body, timeout=(10, 60), headers={
+                "x-api-key": key, "anthropic-version": "2023-06-01",
+                "content-type": "application/json"})
+        except requests.RequestException as e:
+            raise BrainError(f"anthropic connection: {e}")
+        if r.status_code != 200:
+            detail = ""
+            try:
+                detail = r.json().get("error", {}).get("message", "")
+            except Exception:
+                detail = (r.text or "")[:160]
+            raise BrainError(f"anthropic http {r.status_code}: {detail}")
+        try:
+            parts = r.json().get("content", [])
+            text = "".join(p.get("text", "") for p in parts if p.get("type") == "text")
+        except Exception as e:
+            raise BrainError(f"anthropic bad response: {e}")
+        return text.strip()
+
     # ── fallback messaging ──────────────────────────────────────
     def _fallback_message(self, errors: dict[str, str]) -> str:
         title = self.cfg.user_title

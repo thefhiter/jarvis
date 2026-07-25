@@ -54,6 +54,7 @@ answers out loud while a glowing arc-reactor HUD reacts to the conversation in r
 | “set volume to 40”, “volume up”, “mute” | system volume (pycaw) |
 | “set brightness to 70”, “brighter / dimmer” | display brightness |
 | “take a screenshot” | saves to `Pictures/Jarvis` |
+| “what’s on my screen”, “describe my screen” | JARVIS looks (needs an Anthropic key) |
 | “system status”, “battery status” | CPU / memory / battery |
 | “minimize everything”, “maximize”, “switch window” | window control |
 | “pause”, “next track”, “previous song”, “play music” | media transport (media keys) |

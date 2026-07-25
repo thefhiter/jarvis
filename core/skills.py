@@ -166,12 +166,13 @@ def _safe_math(expr: str) -> float:
 
 
 class Skills:
-    def __init__(self, cfg, hud, say, last_reply=None, forget=None):
+    def __init__(self, cfg, hud, say, last_reply=None, forget=None, describe_image=None):
         self.cfg = cfg
         self.hud = hud
         self.say = say                # callable(text) -> speaks via the mouth
         self._last_reply = last_reply or (lambda: "")   # getter for JARVIS's last line
         self._forget = forget or (lambda: None)         # clears brain conversation memory
+        self._describe_image = describe_image           # callable(question, b64)->str (vision)
         self.should_exit = False
         self._reminders: list[dict] = []   # active timers/reminders/alarms
         self._rid = 0
@@ -187,7 +188,7 @@ class Skills:
             self._exit, self._help, self._identity, self._time,
             self._datecalc, self._date, self._repeat, self._reset, self._ipaddr,
             self._media, self._open, self._close_app, self._search, self._youtube,
-            self._volume, self._brightness, self._screenshot, self._system,
+            self._volume, self._brightness, self._vision, self._screenshot, self._system,
             self._battery, self._window, self._type_text, self._clipboard,
             self._note, self._reminder, self._timer, self._weather, self._power,
             self._math, self._convert, self._define, self._news, self._fun,
@@ -429,6 +430,28 @@ class Skills:
             return f"Brightness is at {cur} percent."
         except Exception as e:
             return f"I couldn't adjust the brightness — {e}."
+
+    # ── screen vision ("what's on my screen") ───────────────────
+    def _vision(self, t, _):
+        if not re.search(r"\b(what('?s| is) on (my |the )?screen|describe (my |the )?screen|"
+                         r"read (my |the )?screen|what am i looking at|look at (my |the )?screen)\b", t):
+            return None
+        if self._describe_image is None:
+            return None
+        try:
+            from PIL import ImageGrab
+            import base64
+            import io
+            img = ImageGrab.grab()
+            img.thumbnail((1280, 1280))     # cap size -> fewer tokens, faster
+            buf = io.BytesIO()
+            img.convert("RGB").save(buf, format="JPEG", quality=70)
+            b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+        except Exception as e:
+            return f"I couldn't capture the screen — {e}."
+        return self._describe_image(
+            "In two or three short spoken sentences, describe what is currently on my screen.",
+            b64)
 
     # ── screenshot ──────────────────────────────────────────────
     def _screenshot(self, t, _):

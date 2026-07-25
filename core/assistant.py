@@ -30,7 +30,8 @@ class Assistant:
         self.last_reply = ""               # what JARVIS last said (for "repeat that")
         self.skills = Skills(cfg, hud, self._say,
                              last_reply=lambda: self.last_reply,
-                             forget=self._forget_conversation)
+                             forget=self._forget_conversation,
+                             describe_image=self._describe_screen)
         self.stop = threading.Event()
         self.ptt = threading.Event()       # push-to-talk trigger from the HUD
         self._turn_lock = threading.Lock()  # serialises voice/text turns
@@ -109,6 +110,14 @@ class Assistant:
     # ── conversation reset (for "forget our conversation") ──────
     def _forget_conversation(self) -> None:
         self.brain.forget()
+
+    # ── screen vision (for "what's on my screen") ───────────────
+    def _describe_screen(self, question: str, image_b64: str) -> str:
+        try:
+            return self.brain.ask_image(question, image_b64)
+        except Exception:
+            return (f"To see your screen I need an Anthropic API key, {self.cfg.user_title}. "
+                    f"Add one in the settings gear and I'll be able to look.")
 
     # ── speaking helper (also used by skills like timers) ───────
     def _say(self, text: str) -> None:
