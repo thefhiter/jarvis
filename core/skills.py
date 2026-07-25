@@ -153,10 +153,12 @@ def _safe_math(expr: str) -> float:
 
 
 class Skills:
-    def __init__(self, cfg, hud, say):
+    def __init__(self, cfg, hud, say, last_reply=None, forget=None):
         self.cfg = cfg
         self.hud = hud
         self.say = say                # callable(text) -> speaks via the mouth
+        self._last_reply = last_reply or (lambda: "")   # getter for JARVIS's last line
+        self._forget = forget or (lambda: None)         # clears brain conversation memory
         self.should_exit = False
         self._reminders: list[dict] = []   # active timers/reminders/alarms
         self._rid = 0
@@ -169,6 +171,7 @@ class Skills:
             return None
         for fn in (
             self._exit, self._help, self._identity, self._time, self._date,
+            self._repeat, self._reset,
             self._media, self._open, self._close_app, self._search, self._youtube,
             self._volume, self._brightness, self._screenshot, self._system,
             self._battery, self._window, self._type_text, self._clipboard,
@@ -205,6 +208,24 @@ class Skills:
         if re.search(r"\b(who are you|what is your name|what's your name|introduce yourself)\b", t):
             return (f"I am JARVIS — your just-a-rather-very-intelligent-system. "
                     f"At your service, {self.cfg.user_title}.")
+        return None
+
+    def _repeat(self, t, _):
+        if re.search(r"\b(repeat that|say (that|it) again|what did you say|come again|"
+                     r"can you repeat that|repeat what you said)\b", t):
+            last = (self._last_reply() or "").strip()
+            if not last:
+                return f"I haven't said anything yet, {self.cfg.user_title}."
+            return last
+        return None
+
+    def _reset(self, t, _):
+        if re.search(r"\b(forget (our|the|this) (conversation|chat|context)|"
+                     r"reset (our|the|your)? ?(conversation|chat|context|memory)|"
+                     r"clear (your )?memory|start over|new conversation|"
+                     r"forget what we (talked|said|discussed))\b", t):
+            self._forget()
+            return f"Done, {self.cfg.user_title}. I've cleared our conversation — a clean slate."
         return None
 
     def _time(self, t, _):

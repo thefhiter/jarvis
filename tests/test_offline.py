@@ -466,6 +466,20 @@ def test_skills():
         # math must never execute arbitrary code
         check("math rejects names", sk.handle("what is __import__") is None)
         check("math guards huge power", sk.handle("what is 2 to the power of 999999") is None)
+
+        # repeat + reset (last-reply getter / forget callback)
+        replies = {"v": ""}
+        forgot = {"v": False}
+        sk2 = Skills(config.load(), FakeHud(), say=lambda t: None,
+                     last_reply=lambda: replies["v"],
+                     forget=lambda: forgot.__setitem__("v", True))
+        check("repeat with nothing said", "haven't said" in str(sk2.handle("repeat that")))
+        replies["v"] = "The capital of France is Paris, sir."
+        check("repeat re-speaks last", sk2.handle("say that again") == replies["v"])
+        check("reset triggers forget", "clean slate" in str(sk2.handle("forget our conversation"))
+              and forgot["v"] is True)
+        check("reset: start over", sk2.handle("start over") is not None)
+        check("repeat doesn't hijack brain", sk2.handle("tell me about the moon") is None)
     finally:
         subprocess.Popen = _orig_popen
 

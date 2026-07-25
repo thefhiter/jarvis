@@ -73,6 +73,8 @@ answers out loud while a glowing arc-reactor HUD reacts to the conversation in r
 | “lock / sleep / shut down / restart the computer” | power (guarded) |
 | “run a task: create a python script that …” | agentic Claude Code in `workspace/` |
 | “who are you”, “what can you do” | JARVIS introduces itself |
+| “repeat that”, “say that again” | re-speaks its last reply |
+| “forget our conversation”, “start over” | clears the chat memory |
 | anything else | answered conversationally by the brain |
 
 Say **“goodbye Jarvis”** to power down.

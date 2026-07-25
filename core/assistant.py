@@ -27,7 +27,10 @@ class Assistant:
         self.brain = Brain(cfg)
         self.mouth = Mouth(cfg, hud)
         self.ears = Ears(cfg, hud)
-        self.skills = Skills(cfg, hud, self._say)
+        self.last_reply = ""               # what JARVIS last said (for "repeat that")
+        self.skills = Skills(cfg, hud, self._say,
+                             last_reply=lambda: self.last_reply,
+                             forget=self._forget_conversation)
         self.stop = threading.Event()
         self.ptt = threading.Event()       # push-to-talk trigger from the HUD
         self._turn_lock = threading.Lock()  # serialises voice/text turns
@@ -103,8 +106,13 @@ class Assistant:
                 if self.on_quit:
                     self.on_quit()
 
+    # ── conversation reset (for "forget our conversation") ──────
+    def _forget_conversation(self) -> None:
+        self.brain.forget()
+
     # ── speaking helper (also used by skills like timers) ───────
     def _say(self, text: str) -> None:
+        self.last_reply = text
         self.hud.state("speaking")
         self.hud.jarvis(text)
         self.mouth.speak(text)
@@ -124,6 +132,7 @@ class Assistant:
         full = self.mouth.speak_stream(chunks, on_text=on_text)
         full = (full or "").strip()
         if full:
+            self.last_reply = full
             self.hud.jarvis(full)
         self.hud.state("idle")
 
@@ -238,8 +247,11 @@ class Assistant:
             self._send_config()
 
             time.sleep(1.2)   # let the HUD boot animation breathe
+            hour = time.localtime().tm_hour
+            greet = ("Good morning" if hour < 12 else
+                     "Good afternoon" if hour < 18 else "Good evening")
             mode = "awaiting your command" if self.cfg.enable_voice else "in keyboard mode"
-            self._say(f"Good day, {self.cfg.user_title}. JARVIS online and {mode}.")
+            self._say(f"{greet}, {self.cfg.user_title}. JARVIS online and {mode}.")
 
             if self.cfg.enable_voice:
                 self._voice_loop()
