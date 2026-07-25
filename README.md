@@ -46,6 +46,8 @@ answers out loud while a glowing arc-reactor HUD reacts to the conversation in r
 | Say… | It does |
 |------|---------|
 | “what time / date is it” | tells the time / date |
+| “how many days until christmas”, “what’s the date in 30 days”, “what day is Oct 31” | date maths |
+| “what’s my IP address” | your public IP |
 | “open notepad / chrome / youtube / spotify …” | launches apps & websites |
 | “search for quantum computing” | Google search in your browser |
 | “play daft punk on youtube” | YouTube search/play |

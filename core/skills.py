@@ -101,6 +101,17 @@ _VOLUME = {  # base: millilitre
 _UNIT_TABLES = {"length": _LENGTH, "weight": _WEIGHT, "volume": _VOLUME}
 _TEMP_UNITS = {"c", "celsius", "centigrade", "f", "fahrenheit", "k", "kelvin"}
 
+# (month, day) for "how many days until …"
+_HOLIDAYS = {
+    "christmas": (12, 25), "christmas eve": (12, 24), "new year": (1, 1),
+    "new year's": (1, 1), "new years": (1, 1), "halloween": (10, 31),
+    "valentine's day": (2, 14), "valentines day": (2, 14), "april fools": (4, 1),
+}
+_MONTHS = {m: i for i, m in enumerate(
+    ["january", "february", "march", "april", "may", "june", "july", "august",
+     "september", "october", "november", "december"], start=1)}
+_MONTHS.update({m[:3]: i for m, i in list(_MONTHS.items())})
+
 # safe arithmetic — only these node/operator types are ever evaluated
 _MATH_OPS = {
     ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul,
@@ -170,8 +181,8 @@ class Skills:
         if not t:
             return None
         for fn in (
-            self._exit, self._help, self._identity, self._time, self._date,
-            self._repeat, self._reset,
+            self._exit, self._help, self._identity, self._time,
+            self._datecalc, self._date, self._repeat, self._reset, self._ipaddr,
             self._media, self._open, self._close_app, self._search, self._youtube,
             self._volume, self._brightness, self._screenshot, self._system,
             self._battery, self._window, self._type_text, self._clipboard,
@@ -237,6 +248,64 @@ class Skills:
         if re.search(r"\b(what('?s| is) the date|what day is it|today's date)\b", t):
             return f"Today is {datetime.now().strftime('%A, %B %d, %Y')}."
         return None
+
+    # ── date maths: countdowns, "date in N days", "what day is X" ─
+    def _datecalc(self, t, _):
+        u = self.cfg.user_title
+        m = re.search(r"how many days\s+(?:until|till|til|to)\s+(.+)", t)
+        if m:
+            target = self._resolve_date(m.group(1))
+            if target is None:
+                return None
+            days = (target - datetime.now().date()).days
+            if days <= 0:
+                return f"That's today, {u}!"
+            return f"{days} day{'s' if days != 1 else ''} until {m.group(1).strip()}, {u}."
+        m = (re.search(r"(?:what(?:'s| is) the date|what date)\s+(?:in|after)\s+(\d+)\s+days?", t)
+             or re.search(r"(\d+)\s+days?\s+from\s+(?:now|today)", t))
+        if m:
+            d = datetime.now().date() + timedelta(days=int(m.group(1)))
+            return f"That would be {d.strftime('%A, %B %d, %Y')}, {u}."
+        m = re.search(r"what day (?:of the week )?is\s+(.+)", t)
+        if m:
+            target = self._resolve_date(m.group(1))
+            if target is None:
+                return None
+            return f"{m.group(1).strip()} falls on a {target.strftime('%A')}, {u}."
+        return None
+
+    def _resolve_date(self, s: str):
+        """Parse a holiday or a 'Month day' / 'day Month' into the next such date."""
+        s = s.strip().lower().rstrip("?.! ")
+        today = datetime.now().date()
+        for name, (mo, da) in _HOLIDAYS.items():
+            if name in s:
+                d = datetime(today.year, mo, da).date()
+                return d if d >= today else datetime(today.year + 1, mo, da).date()
+        m = (re.search(r"([a-z]+)\s+(\d{1,2})(?:st|nd|rd|th)?", s)
+             or re.search(r"(\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?([a-z]+)", s))
+        if not m:
+            return None
+        a, b = m.group(1), m.group(2)
+        month = _MONTHS.get(a) if a in _MONTHS else _MONTHS.get(b)
+        day = int(b) if a in _MONTHS else (int(a) if a.isdigit() else None)
+        if not month or not day or day > 31:
+            return None
+        try:
+            d = datetime(today.year, month, day).date()
+        except ValueError:
+            return None
+        return d if d >= today else datetime(today.year + 1, month, day).date()
+
+    def _ipaddr(self, t, _):
+        if not re.search(r"\b(what('?s| is) my ip|my ip address|my public ip)\b", t):
+            return None
+        try:
+            r = requests.get("https://api.ipify.org", timeout=6)
+            r.raise_for_status()
+            return f"Your public IP address is {r.text.strip()}, {self.cfg.user_title}."
+        except Exception:
+            return "I couldn't reach the IP service just now."
 
     # ── launching ───────────────────────────────────────────────
     def _open(self, t, original):

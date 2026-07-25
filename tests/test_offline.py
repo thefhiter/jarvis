@@ -355,6 +355,40 @@ def _math_eq(phrase, sub):
     return r is not None and sub in r
 
 
+def test_datecalc_and_ip():
+    section("skills — date maths + public IP")
+    import core.skills as S
+    from core import config
+    from core.skills import Skills
+    from datetime import datetime, timedelta
+    sk = Skills(config.load(), FakeHud(), say=lambda t: None)
+
+    r = sk.handle("how many days until christmas")
+    check("days until christmas", r is not None and "christmas" in r.lower())
+    r = sk.handle("what's the date in 30 days")   # must NOT be shadowed by _date
+    future = (datetime.now().date() + timedelta(days=30))
+    check("date in N days correct (not shadowed by _date)",
+          r is not None and future.strftime("%B %d") in r and "Today is" not in r, r)
+    r = sk.handle("what day is december 25")
+    check("what day is dec 25", r is not None and "falls on" in r.lower(), r)
+    tgt = sk._resolve_date("december 25")
+    check("resolve 'december 25'", tgt is not None and tgt.month == 12 and tgt.day == 25)
+    tgt2 = sk._resolve_date("25 december")
+    check("resolve '25 december'", tgt2 is not None and tgt2.month == 12 and tgt2.day == 25)
+    check("bogus countdown -> brain", sk.handle("how many days until the big meeting") is None)
+    check("date question not over-matched", sk.handle("what day is good for a walk") is None)
+
+    orig = S.requests.get
+    class _IP:
+        text = "203.0.113.7"; status_code = 200
+        def raise_for_status(self): pass
+    S.requests.get = lambda *a, **k: _IP()
+    try:
+        check("public ip", "203.0.113.7" in str(sk.handle("what's my ip address")))
+    finally:
+        S.requests.get = orig
+
+
 def test_reminder_fire():
     section("skills — reminder fire() deregisters + speaks (Timer callback)")
     import core.skills as S
@@ -526,8 +560,8 @@ def main():
     print("JARVIS offline test suite")
     for t in (test_config, test_brain_anthropic_parser, test_brain_chain_and_fallback,
               test_now_context, test_speech_chunker, test_decimal_stream_split,
-              test_stream_json_parser, test_math_safety, test_reminder_fire,
-              test_skills, test_clap):
+              test_stream_json_parser, test_math_safety, test_datecalc_and_ip,
+              test_reminder_fire, test_skills, test_clap):
         try:
             t()
         except Exception as e:
