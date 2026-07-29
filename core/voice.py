@@ -69,6 +69,8 @@ class Ears:
         self._model = None      # faster-whisper
         self._oww = None        # openWakeWord
         self._clap = ClapDetector(cfg)
+        self._stt_lock = threading.Lock()      # one whisper decode at a time (partials + final)
+        self._partial_busy = threading.Event() # a live partial transcription is running
 
     # ── heavy init (models) ─────────────────────────────────────
     def load(self) -> None:
@@ -144,15 +146,20 @@ class Ears:
         heard = False
         trailing_silence = 0.0
         elapsed = 0.0
+        max_rms = 0.0
+        last_partial = 0.0
         frame_ms = BLOCK / self.sr * 1000.0
         silence_limit = self.cfg.silence_ms
-        # a little grace at the start so we don't cut off a slow starter
-        start_grace = 1600.0
+        start_grace = float(getattr(self.cfg, "start_grace_ms", 2200))
+        live = getattr(self.cfg, "live_transcribe", True)
+        # show a live "listening…" cue so the user KNOWS the mic is open
+        self.hud.user_partial("")
 
         while not stop.is_set():
             block = self._read()
             frames.append(block)
             rms = float(np.sqrt(np.mean(block ** 2)) + 1e-9)
+            max_rms = max(max_rms, rms)
             elapsed += frame_ms
 
             # drive the HUD listening visuals
@@ -165,6 +172,13 @@ class Ears:
             else:
                 trailing_silence += frame_ms
 
+            # live transcription: every ~0.6 s, transcribe what we have so far on a
+            # worker thread and show it, so the user SEES what JARVIS is hearing.
+            if live and heard and (elapsed - last_partial) >= 600 \
+                    and not self._partial_busy.is_set():
+                last_partial = elapsed
+                self._emit_partial(list(frames))
+
             if heard and trailing_silence >= silence_limit:
                 break
             if not heard and elapsed >= start_grace:
@@ -172,18 +186,70 @@ class Ears:
             if elapsed >= self.cfg.max_command_ms:
                 break
 
-        if not heard:
+        # Forgiving capture: transcribe if we clearly heard speech OR there was any
+        # audible energy at all (a quiet mic that never crossed the threshold) — the
+        # whisper VAD drops true silence, so a dead-quiet room still returns "".
+        if not frames or (not heard and max_rms < self.cfg.energy_threshold * 0.5):
+            self.hud.user("")          # clear the "listening…" cue
             return ""
         audio = np.concatenate(frames).astype(np.float32)
-        return self.transcribe(audio)
+        text = self.transcribe(audio)
+        if not text:
+            self.hud.user("")
+        return text
+
+    def _emit_partial(self, frames: list) -> None:
+        """Transcribe the audio-so-far on a background thread and push it to the HUD
+        as a live 'this is what I'm hearing' subtitle. At most one runs at a time."""
+        if self._partial_busy.is_set():
+            return
+        self._partial_busy.set()
+
+        def work():
+            try:
+                audio = np.concatenate(frames).astype(np.float32)
+                txt = self.transcribe(audio)
+                if txt:
+                    self.hud.user_partial(txt)
+            except Exception as e:  # noqa: BLE001 — a partial must never break capture
+                print(f"[ears] partial transcription: {e}")
+            finally:
+                self._partial_busy.clear()
+
+        threading.Thread(target=work, name="stt-partial", daemon=True).start()
 
     def transcribe(self, audio: np.ndarray) -> str:
-        segments, _ = self._model.transcribe(
-            audio, language="en", vad_filter=True, beam_size=1,
-        )
-        return " ".join(s.text for s in segments).strip()
+        # Speed + robustness: greedy (beam_size=1), no cross-segment conditioning
+        # (avoids the whisper repetition-loop that turns a short command into a wall
+        # of repeated words), temperature 0 for determinism. vad_filter trims the
+        # leading/trailing silence we captured, so decode has less audio to chew on.
+        # The lock serialises the (possibly concurrent) live-partial and final decodes.
+        with self._stt_lock:
+            audio = self._normalize_gain(audio)   # boost a quiet mic so whisper can hear it
+            segments, _ = self._model.transcribe(
+                audio, language="en", beam_size=1, vad_filter=True,
+                temperature=0.0, condition_on_previous_text=False,
+                # bias the decoder toward short spoken commands and the name "Jarvis",
+                # which noticeably improves recognition of terse, real-world phrasing.
+                initial_prompt="A short spoken command to a desktop assistant named Jarvis.",
+            )
+            return " ".join(s.text for s in segments).strip()
 
     # ── helpers ─────────────────────────────────────────────────
+    @staticmethod
+    def _normalize_gain(audio: np.ndarray) -> np.ndarray:
+        """Scale up a quiet recording so whisper hears it clearly (a laptop far-field
+        mic array is often well below line level). Only boosts genuinely quiet-but-
+        present audio: pure silence and already-loud audio pass through untouched, and
+        gain is capped so we don't blow up the noise floor."""
+        if audio is None or len(audio) == 0:
+            return audio
+        peak = float(np.max(np.abs(audio)))
+        if 0.003 < peak < 0.3:
+            gain = min(0.3 / peak, 20.0)
+            audio = np.clip(audio * gain, -1.0, 1.0)
+        return audio.astype(np.float32)
+
     @staticmethod
     def _spectrum(block: np.ndarray, nbins: int = 32) -> list[float]:
         win = block * np.hanning(len(block))

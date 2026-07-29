@@ -31,6 +31,7 @@ class Config:
     claude_model: str = "claude-haiku-4-5"   # CLI model; Haiku = fast + cheap for short butler replies
     groq_api_key: str = ""
     groq_model: str = "llama-3.3-70b-versatile"
+    groq_vision_model: str = "meta-llama/llama-4-scout-17b-16e-instruct"  # multimodal: lets JARVIS see the screen
     ollama_model: str = "llama3.2"
     ollama_url: str = "http://localhost:11434"
 
@@ -54,7 +55,9 @@ class Config:
     # endpointing: stop capturing a command after this much trailing silence
     silence_ms: int = 800
     max_command_ms: int = 12000
-    energy_threshold: float = 0.012     # RMS floor that counts as "speech"
+    energy_threshold: float = 0.009     # RMS floor that counts as "speech" (lower = hears quieter mics)
+    start_grace_ms: int = 2200          # how long to wait for a slow starter before giving up
+    live_transcribe: bool = True        # show what JARVIS is hearing live, as you speak
 
     # ── voice output (TTS) ──────────────────────────────────────
     tts_engine: str = "edge"           # "edge" (neural, online) | "sapi" (offline)
@@ -75,7 +78,13 @@ class Config:
 
     # ── powers ──────────────────────────────────────────────────
     allow_shutdown: bool = True        # allow lock/sleep/shutdown/restart commands
-    allow_agentic: bool = True         # allow "jarvis, do <task>" -> Claude Code with tools
+    allow_agentic: bool = True         # allow "jarvis, do <task>" -> Claude agent with tools
+    # SAFE default: the agent runs in a sandboxed workspace with file/web tools but no
+    # unrestricted system access. Set True to grant FULL control (skip-permissions, runs
+    # from your home dir, can run any command) — powerful, but a misheard voice command
+    # could then do real damage. Opt in only if you understand that.
+    allow_full_control: bool = False
+    allow_research: bool = True        # allow "research X" -> live web research: open pages, download PDFs
     weather_city: str = ""             # "" = auto-detect via IP
 
     def save(self) -> None:

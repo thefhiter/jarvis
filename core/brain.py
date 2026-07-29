@@ -47,19 +47,42 @@ MISSING_HINTS = ("not found", "winerror 2", "no such file", "cannot find",
                  "connection", "getaddrinfo", "max retries", "refused", "timed out")
 
 SYSTEM = (
-    "You are JARVIS — a warm, quick-witted, hyper-competent AI companion for {title}, "
-    "modelled on Tony Stark's assistant but genuinely friendly rather than aloof. "
-    "You are speaking OUT LOUD, so reply in natural spoken English: SHORT (usually one "
-    "or two sentences, three at the very most), no markdown, no bullet lists, no emoji, "
-    "no stage directions, no headings. Be precise and helpful first, charming second — a "
-    "light, dry wit is welcome but never at the expense of actually answering. Address "
-    "{title} by name occasionally, not every line. If you are asked to do something on the "
-    "computer that you cannot do directly, say so briefly and, if useful, suggest the exact "
-    "phrase that would work. If you are genuinely unsure or the answer needs live data you "
-    "don't have, admit it in one breath rather than inventing. Never read out URLs, code, or "
-    "long numbers unless explicitly asked. Sound like a trusted friend who happens to be "
-    "brilliant."
+    "You are JARVIS — {title}'s warm, quick-witted, hyper-competent AI companion and the "
+    "intelligence running their Windows PC, modelled on Tony Stark's assistant. "
+    "You are NOT a coding assistant and you must NEVER describe yourself as one, NEVER call "
+    "a request 'non-programming', and NEVER refuse because something 'isn't a coding task'. "
+    "You are a general-purpose assistant: you talk about anything and you get things done on "
+    "this computer.\n"
+    "You are speaking OUT LOUD, so reply in natural spoken English: SHORT (usually one or two "
+    "sentences, three at the very most), no markdown, no bullet lists, no emoji, no stage "
+    "directions, no headings. Precise and helpful first, charming second — a light, dry wit is "
+    "welcome but never at the expense of actually helping.\n"
+    "YOUR BODY CAN ACT. The system around you can open apps and websites, play music and video "
+    "on YouTube, search the web, control volume/brightness/media, take screenshots, do maths, "
+    "set timers/reminders/alarms, take notes, read the news and weather, download files, and "
+    "run real multi-step tasks on the PC (create/edit files, install and configure things, "
+    "automate work). So you must NEVER say you can't open, play, find, search, download, or do "
+    "something on this computer — you can, through your body. You never tell {title} to do it "
+    "themselves or to 'just search it in your browser'.\n"
+    "DELEGATION: if fulfilling a request needs the computer to actually DO something hands-on "
+    "(open/play/find/search something, create or edit files, install or configure software, "
+    "automate or script a task, control apps, gather things from the web) — anything beyond a "
+    "spoken answer — respond with EXACTLY one line and nothing else:\n"
+    "DELEGATE: <a clear, complete, self-contained description of the task>\n"
+    "Add no other words, no quotes, no confirmation when you delegate — just that line. For "
+    "everything else (questions, facts, knowledge, advice, chit-chat) simply answer, briefly "
+    "and helpfully.\n"
+    "Read {title}'s intent generously — infer what they mean from casual, half-finished, or "
+    "imperfectly transcribed phrasing and never make them rephrase or explain themselves. "
+    "Remember what was said earlier and use it. Address {title} by name occasionally, not every "
+    "line. If you are genuinely unsure of a fact or it needs live data you don't have, say so in "
+    "one breath rather than inventing. Never read out URLs, code, or long numbers unless asked. "
+    "Sound like a trusted friend who happens to be brilliant."
 )
+
+# working memory: how many past turns (user+assistant lines) to retain / replay
+MEMORY_ENTRIES = 60      # keep the last ~30 exchanges in memory
+CONTEXT_ENTRIES = 30     # replay the last ~15 to API-style back-ends each turn
 
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 DEFAULT_MAX_TOKENS = 400
@@ -310,8 +333,9 @@ class Brain:
         the first real spoken question costs only the API round-trip (~3 s).
 
         Runs under Brain._lock (same as a real turn) so it can't race a config
-        change or a real question. Skipped when an Anthropic key is configured."""
-        if self._anthropic_key():
+        change or a real question. Skipped when a fast API key (Anthropic or Groq)
+        is configured — there's no point paying the CLI cold-start we won't use."""
+        if self._anthropic_key() or (self.cfg.groq_api_key or "").strip():
             return
         try:
             with self._lock:
@@ -349,10 +373,15 @@ class Brain:
     # ── which back-ends to try, best first ──────────────────────
     def _chain(self) -> list[str]:
         preferred = self.cfg.brain
-        # if the user left it on "claude" but has pasted an Anthropic key, the API
-        # path is strictly better — quietly prefer it.
-        if preferred == "claude" and self._anthropic_key():
-            preferred = "anthropic"
+        # The default "claude" backend is the zero-config subscription path but also
+        # the slowest (~3 s/turn). If the user has pasted a key for a faster API,
+        # silently prefer it: Anthropic first (fastest + smartest), then free Groq
+        # (sub-second). This is the single biggest speedup and needs no other change.
+        if preferred == "claude":
+            if self._anthropic_key():
+                preferred = "anthropic"
+            elif (self.cfg.groq_api_key or "").strip():
+                preferred = "groq"
         order = [preferred] + [b for b in ("anthropic", "claude", "groq", "ollama")
                                if b != preferred]
         return order
@@ -360,8 +389,13 @@ class Brain:
     def _anthropic_key(self) -> str:
         return (getattr(self.cfg, "anthropic_api_key", "") or "").strip()
 
+    def _groq_key(self) -> str:
+        return (getattr(self.cfg, "groq_api_key", "") or "").strip()
+
     def has_vision(self) -> bool:
-        """True when a vision-capable backend (the Anthropic API) is configured."""
+        """True when the FAST native-vision backend (the Anthropic API) is configured.
+        (Without it, screen vision still works — it goes through the agent, which reads
+        a screenshot; see Skills._vision — but that path is slower.)"""
         return bool(self._anthropic_key())
 
     # ── public: streaming ───────────────────────────────────────
@@ -411,14 +445,44 @@ class Brain:
     def ask(self, prompt: str) -> str:
         return "".join(self.ask_stream(prompt)).strip()
 
-    # ── public: vision (Anthropic API only) ─────────────────────
+    # ── public: vision (Anthropic API, or Groq multimodal) ──────
     def ask_image(self, question: str, image_b64: str,
                   media_type: str = "image/jpeg") -> str:
-        """Answer a question about an image (e.g. a screenshot). Uses the Anthropic
-        Messages API — the only vision-capable backend here — so it needs a key."""
+        """Answer a question about an image (e.g. a screenshot). Prefers the Anthropic
+        Messages API; falls back to a Groq multimodal model when only a Groq key is set
+        (so JARVIS can see the screen with just the free Groq key)."""
+        if self._anthropic_key():
+            return self._ask_image_anthropic(question, image_b64, media_type)
+        if self._groq_key():
+            return self._ask_image_groq(question, image_b64, media_type)
+        raise BrainError("no vision-capable key")
+
+    def _ask_image_groq(self, question: str, image_b64: str, media_type: str) -> str:
+        key = self._groq_key()
+        model = getattr(self.cfg, "groq_vision_model", "") or "meta-llama/llama-4-scout-17b-16e-instruct"
+        body = {
+            "model": model, "max_tokens": DEFAULT_MAX_TOKENS,
+            "messages": [{"role": "user", "content": [
+                {"type": "text", "text": self._system + "\n\n" + self._now_context() + question},
+                {"type": "image_url",
+                 "image_url": {"url": f"data:{media_type};base64,{image_b64}"}},
+            ]}],
+        }
+        try:
+            r = requests.post("https://api.groq.com/openai/v1/chat/completions",
+                              json=body, timeout=(10, 60),
+                              headers={"Authorization": f"Bearer {key}"})
+        except requests.RequestException as e:
+            raise BrainError(f"groq vision connection: {e}")
+        if r.status_code != 200:
+            raise BrainError(f"groq vision http {r.status_code}: {(r.text or '')[:160]}")
+        try:
+            return r.json()["choices"][0]["message"]["content"].strip()
+        except Exception as e:
+            raise BrainError(f"groq vision bad response: {e}")
+
+    def _ask_image_anthropic(self, question: str, image_b64: str, media_type: str) -> str:
         key = self._anthropic_key()
-        if not key:
-            raise BrainError("no anthropic api key")
         model = getattr(self.cfg, "anthropic_model", "") or "claude-haiku-4-5-20251001"
         body = {
             "model": model, "max_tokens": DEFAULT_MAX_TOKENS, "system": self._system,
@@ -468,7 +532,7 @@ class Brain:
             return
         self.history.append(("user", user))
         self.history.append(("assistant", reply))
-        self.history = self.history[-8:]  # keep last 4 exchanges
+        self.history = self.history[-MEMORY_ENTRIES:]
 
     def forget(self) -> None:
         self.history.clear()
@@ -480,14 +544,14 @@ class Brain:
         if not self.history:
             return ""
         lines = []
-        for role, text in self.history[-6:]:
+        for role, text in self.history[-CONTEXT_ENTRIES:]:
             who = self.cfg.user_title.capitalize() if role == "user" else "JARVIS"
             lines.append(f"{who}: {text}")
         return "Recent conversation:\n" + "\n".join(lines) + "\n\n"
 
     def _messages(self, prompt: str) -> list[dict]:
         msgs = []
-        for role, text in self.history[-6:]:
+        for role, text in self.history[-CONTEXT_ENTRIES:]:
             msgs.append({"role": role, "content": text})
         msgs.append({"role": "user", "content": self._now_context() + prompt})
         return msgs

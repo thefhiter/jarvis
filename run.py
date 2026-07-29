@@ -35,6 +35,7 @@ def main() -> int:
     hud.start()
 
     assistant = Assistant(cfg, hud)
+    assistant.autostart_demo = "--demo" in sys.argv   # play the showcase on boot
 
     window = webview.create_window(
         "J.A.R.V.I.S.",
@@ -75,6 +76,31 @@ def main() -> int:
             _safe(window.maximize)
             win_state["max"] = True
 
+    # ── compact corner mode: shrink the window to a small always-on-top icon in the
+    # bottom-right so the agent's real windows (Chrome, files) stay visible ──
+    def _screen_size():
+        try:
+            import ctypes
+            u = ctypes.windll.user32
+            u.SetProcessDPIAware()
+            return int(u.GetSystemMetrics(0)), int(u.GetSystemMetrics(1))
+        except Exception:
+            return 1920, 1080
+
+    def do_compact():
+        sw, sh = _screen_size()
+        tw, th = 236, 252
+        _safe(window.resize, tw, th)
+        _safe(window.move, sw - tw - 22, sh - th - 54)
+        win_state["max"] = False
+
+    def do_restore_win():
+        sw, sh = _screen_size()
+        fw, fh = 1200, 780
+        _safe(window.resize, fw, fh)
+        _safe(window.move, max(0, (sw - fw) // 2), max(0, (sh - fh) // 2))
+        win_state["max"] = False
+
     tray_ref = {"tray": None}
 
     def do_quit():
@@ -98,6 +124,8 @@ def main() -> int:
     assistant.on_toggle_max = do_toggle_max
     assistant.on_show = do_show
     assistant.on_hide = do_hide
+    assistant.on_compact = do_compact
+    assistant.on_restore = do_restore_win
     assistant.on_quit = do_quit
 
     # ── system tray (persistent-app feel; degrades to None if unavailable) ──

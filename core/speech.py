@@ -243,14 +243,25 @@ class Mouth:
 
     async def _edge_bytes(self, text: str) -> bytes:
         import edge_tts
-        comm = edge_tts.Communicate(
-            text, self.cfg.tts_voice, rate=self.cfg.tts_rate, pitch=self.cfg.tts_pitch
-        )
-        buf = bytearray()
-        async for chunk in comm.stream():
-            if chunk["type"] == "audio":
-                buf += chunk["data"]
-        return bytes(buf)
+        # one retry: a transient network blip shouldn't drop us to the robotic
+        # offline voice mid-sentence — try the neural voice twice before giving up.
+        last_err = None
+        for attempt in range(2):
+            try:
+                comm = edge_tts.Communicate(
+                    text, self.cfg.tts_voice, rate=self.cfg.tts_rate, pitch=self.cfg.tts_pitch
+                )
+                buf = bytearray()
+                async for chunk in comm.stream():
+                    if chunk["type"] == "audio":
+                        buf += chunk["data"]
+                if buf:
+                    return bytes(buf)
+            except Exception as e:  # noqa: BLE001
+                last_err = e
+        if last_err is not None:
+            raise last_err
+        return b""
 
     def _decode(self, mp3: bytes):
         proc = subprocess.run(

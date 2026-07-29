@@ -62,10 +62,116 @@
            margin-bottom:10px; min-height:18px; opacity:0; transition:opacity .3s; }
   .subs .user.show{ opacity:.85; }
   .subs .user::before{ content:"❯ "; color:rgba(var(--accent2),.9); }
+  /* live transcription: brighter, with a pulsing mic dot + blinking caret so it
+     reads as "I'm hearing you right now" */
+  .subs .user.live{ color:rgba(var(--accent2),.98); opacity:1;
+           text-shadow:0 0 14px rgba(var(--accent),.6); }
+  .subs .user.live::before{ content:"🎙 "; }
+  .subs .user.live::after{ content:"▍"; margin-left:2px; color:rgb(var(--accent2));
+           animation:blink 1s steps(1) infinite; }
   .subs .jarvis{ font-family:var(--sans); font-size:23px; font-weight:500; line-height:1.5;
            color:#e8fbff; text-shadow:0 0 22px rgba(var(--accent),.35); min-height:34px; }
   .subs .jarvis .cursor{ display:inline-block; width:9px; height:20px; margin-left:3px; vertical-align:middle;
            background:rgb(var(--accent2)); box-shadow:0 0 12px rgb(var(--accent)); animation:blink 1s steps(1) infinite; }
+
+  /* ── agent activity panel ("Jarvis is working") ── */
+  .missions{ position:absolute; top:150px; left:32px; width:330px; max-width:34vw; z-index:6;
+           display:flex; flex-direction:column; gap:12px; pointer-events:none; }
+  .missions .mhead{ font-family:var(--mono); font-size:10px; letter-spacing:.34em; text-transform:uppercase;
+           color:rgba(var(--accent),.55); margin-bottom:2px; opacity:0; transition:opacity .4s;
+           display:flex; align-items:center; gap:8px; }
+  .missions.active .mhead{ opacity:.9; }
+  .missions .mhead::before{ content:""; width:6px; height:6px; border-radius:50%; background:rgb(var(--accent2));
+           box-shadow:0 0 10px rgb(var(--accent)); animation:blink 1.6s infinite; }
+  .mcard{ position:relative; border:1px solid rgba(var(--accent),.30); border-radius:12px;
+           background:linear-gradient(180deg, rgba(var(--accent),.12), rgba(2,10,18,.58));
+           box-shadow:0 10px 30px rgba(0,0,0,.45), 0 0 24px rgba(var(--accent),.12),
+                      inset 0 0 22px rgba(var(--accent),.06), inset 0 1px 0 rgba(255,255,255,.12);
+           padding:12px 14px 12px; backdrop-filter:blur(9px);
+           transform:translateX(-24px); opacity:0; transition:transform .5s cubic-bezier(.16,1,.3,1), opacity .5s, border-color .5s; }
+  .mcard.in{ transform:translateX(0); opacity:1; }
+  .mcard.done{ border-color:rgba(56,255,155,.45); box-shadow:0 0 22px rgba(56,255,155,.14); }
+  .mcard.error{ border-color:rgba(var(--danger),.55); }
+  .mcard::before{ content:""; position:absolute; left:0; top:10px; bottom:10px; width:2px; border-radius:2px;
+           background:rgb(var(--accent2)); box-shadow:0 0 10px rgb(var(--accent)); opacity:.8; }
+  .mcard.done::before{ background:#38ff9b; box-shadow:0 0 10px #38ff9b; }
+  .mcard .mtitle{ font-family:var(--sans); font-size:14px; font-weight:600; color:#eafcff; letter-spacing:.02em;
+           margin-bottom:9px; display:flex; align-items:center; justify-content:space-between; gap:8px;
+           text-shadow:0 0 14px rgba(var(--accent),.4); }
+  .mcard .mtag{ font-family:var(--mono); font-size:9px; letter-spacing:.18em; text-transform:uppercase;
+           color:rgba(var(--accent2),.85); border:1px solid rgba(var(--accent),.35); border-radius:20px;
+           padding:2px 8px; white-space:nowrap; }
+  .mcard.done .mtag{ color:#8dffc4; border-color:rgba(56,255,155,.45); }
+  .mstep{ display:flex; align-items:flex-start; gap:9px; font-family:var(--mono); font-size:12px; line-height:1.5;
+           color:rgba(var(--accent2),.82); padding:2px 0; }
+  .mstep .ic{ flex:0 0 14px; width:14px; height:14px; margin-top:1px; position:relative; }
+  .mstep .ic::before{ content:""; position:absolute; inset:2px; border-radius:50%;
+           border:1.5px solid rgba(var(--accent),.4); }
+  .mstep.done .ic::before{ border-color:#38ff9b; background:radial-gradient(circle, #38ff9b 0 40%, transparent 42%);
+           box-shadow:0 0 8px rgba(56,255,155,.6); }
+  .mstep.active{ color:#eafcff; }
+  .mstep.active .ic::before{ border-color:rgb(var(--accent2)); border-top-color:transparent;
+           animation:mspin .7s linear infinite; box-shadow:0 0 10px rgba(var(--accent),.7); }
+  @keyframes mspin{ to{ transform:rotate(360deg); } }
+  .mstep .lbl{ flex:1; }
+  .mstep .det{ display:block; font-size:10.5px; color:rgba(var(--accent),.58); margin-top:1px; letter-spacing:.02em; }
+
+  /* ── ambient light blobs: slow-drifting atmospheric glow behind the reactor
+     (pure CSS, screen-blended over the canvas — cinematic depth, no canvas risk) ── */
+  .ambient{ position:fixed; inset:-10%; z-index:1; pointer-events:none;
+           mix-blend-mode:screen; filter:blur(60px); opacity:.9; }
+  .ambient .blob{ position:absolute; border-radius:50%;
+           background:radial-gradient(circle at 50% 50%, rgba(var(--accent),.20), transparent 68%);
+           will-change:transform; }
+  .ambient .b1{ width:46vw; height:46vw; top:6%; left:8%;  animation:drift1 34s ease-in-out infinite; }
+  .ambient .b2{ width:38vw; height:38vw; bottom:4%; right:10%;
+           background:radial-gradient(circle at 50% 50%, rgba(var(--accent2),.16), transparent 68%);
+           animation:drift2 42s ease-in-out infinite; }
+  .ambient .b3{ width:30vw; height:30vw; top:38%; left:52%;
+           background:radial-gradient(circle at 50% 50%, rgba(120,170,255,.12), transparent 70%);
+           animation:drift3 52s ease-in-out infinite; }
+  @keyframes drift1{ 0%,100%{ transform:translate(0,0) scale(1) } 50%{ transform:translate(6vw,4vh) scale(1.12) } }
+  @keyframes drift2{ 0%,100%{ transform:translate(0,0) scale(1.05) } 50%{ transform:translate(-5vw,-3vh) scale(.92) } }
+  @keyframes drift3{ 0%,100%{ transform:translate(0,0) scale(1) } 50%{ transform:translate(-4vw,5vh) scale(1.15) } }
+
+  /* ── cinematic depth: edge vignette + faint accent bloom (pure CSS, above canvas, below chrome) ── */
+  .depth{ position:fixed; inset:0; z-index:2; pointer-events:none;
+           background:
+             radial-gradient(125% 125% at 50% 42%, transparent 54%, rgba(1,4,10,.62) 100%),
+             radial-gradient(58% 46% at 50% 52%, rgba(var(--accent),.055), transparent 72%);
+           transition:background .8s ease; }
+  .depth.working{ background:
+             radial-gradient(125% 125% at 50% 42%, transparent 52%, rgba(1,4,10,.62) 100%),
+             radial-gradient(64% 52% at 50% 52%, rgba(var(--accent),.10), transparent 74%); }
+
+  /* crisper state-change feedback — the label kicks on every transition */
+  .statelabel.pulse{ animation:stpulse .55s cubic-bezier(.16,1,.3,1); }
+  @keyframes stpulse{ 0%{ transform:scale(1); letter-spacing:.5em; opacity:.7; }
+                      35%{ transform:scale(1.09); letter-spacing:.66em; opacity:1; }
+                      100%{ transform:scale(1); letter-spacing:.5em; } }
+
+  /* ── compact corner mode — the HUD shrinks to a small reactor "icon" while the
+     agent works on your files/Chrome, so the real windows stay visible ── */
+  body.compact .chrome, body.compact .subs, body.compact .missions, body.compact .hint,
+  body.compact .conn, body.compact .winctrls, body.compact .cmdbar{ display:none !important; }
+  #compact{ display:none; }
+  body.compact #compact{ display:flex; position:fixed; inset:0; z-index:8; flex-direction:column;
+           align-items:center; justify-content:flex-end; gap:4px; padding:0 8px 9px; cursor:pointer;
+           animation:compactin .55s cubic-bezier(.16,1,.3,1); }
+  @keyframes compactin{ from{ opacity:0; transform:scale(.55) } to{ opacity:1; transform:scale(1) } }
+  #compact .cring{ position:absolute; inset:7px; border-radius:50%; pointer-events:none;
+           border:1px solid rgba(var(--accent),.35);
+           box-shadow:0 0 26px rgba(var(--accent),.30), inset 0 0 26px rgba(var(--accent),.18);
+           animation:cbreath 2.6s ease-in-out infinite; }
+  @keyframes cbreath{ 0%,100%{ transform:scale(1); opacity:.65 } 50%{ transform:scale(1.045); opacity:1 } }
+  #compact .clabel{ position:relative; z-index:2; font-family:var(--mono); font-size:9px; letter-spacing:.12em;
+           text-transform:uppercase; color:rgba(var(--accent2),.98); text-shadow:0 0 9px rgba(var(--accent),.7);
+           text-align:center; max-width:96%; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+           display:flex; align-items:center; gap:6px; }
+  #compact .clabel::before{ content:""; width:6px; height:6px; border-radius:50%; background:rgb(var(--accent2));
+           box-shadow:0 0 8px rgb(var(--accent)); animation:blink 1.2s infinite; }
+  #compact .chint{ position:relative; z-index:2; font-family:var(--mono); font-size:7px; letter-spacing:.16em;
+           text-transform:uppercase; color:rgba(var(--accent),.45); }
 
   /* ── boot overlay ── */
   #boot{ position:fixed; inset:0; z-index:20; background:#01040a; display:flex; flex-direction:column;
@@ -95,6 +201,9 @@
   .wbtn:hover{ background:rgba(56,225,255,.18); box-shadow:0 0 14px rgba(var(--accent),.6); color:#fff; }
   .wbtn.danger{ border-color:rgba(var(--danger),.5); color:rgba(var(--danger),.85); background:rgba(255,74,74,.06); }
   .wbtn.danger:hover{ background:rgba(255,74,74,.22); box-shadow:0 0 14px rgba(var(--danger),.6); color:#fff; }
+  .wbtn.rec-on{ border-color:rgba(var(--danger),.9); color:#fff; background:rgba(255,74,74,.4);
+                animation:recpulse 1.1s ease-in-out infinite; }
+  @keyframes recpulse{ 0%,100%{ box-shadow:0 0 2px rgba(255,74,74,.3);} 50%{ box-shadow:0 0 18px rgba(255,74,74,.95);} }
   #gear{ font-size:15px; }
   #gear:hover{ transform:rotate(45deg); }
 
@@ -144,11 +253,22 @@
   .panel .btn.cancel:hover{ color:#fff; }
   .hide-field{ display:none !important; }
 
-  @media (prefers-reduced-motion: reduce){ .dot,.subs .jarvis .cursor{ animation:none } #gear:hover{ transform:none } }
+  /* the brand mark breathes a slow glow — a subtle premium cue */
+  #brand{ animation:brandglow 5s ease-in-out infinite; }
+  @keyframes brandglow{ 0%,100%{ text-shadow:0 0 10px rgba(var(--accent),.4) }
+                        50%{ text-shadow:0 0 18px rgba(var(--accent),.85), 0 0 34px rgba(var(--accent),.4) } }
+
+  @media (prefers-reduced-motion: reduce){
+    .dot,.subs .jarvis .cursor{ animation:none } #gear:hover{ transform:none }
+    .ambient .blob{ animation:none } .statelabel.pulse{ animation:none }
+    #brand{ animation:none } .mcard{ transition:none }
+  }
 </style>
 </head>
 <body>
   <div id="stage"><canvas id="c"></canvas></div>
+  <div class="ambient" aria-hidden="true"><span class="blob b1"></span><span class="blob b2"></span><span class="blob b3"></span></div>
+  <div class="depth" id="depth"></div>
 
   <div class="chrome">
     <div class="corner tl"></div><div class="corner tr"></div>
@@ -176,9 +296,24 @@
     <div class="jarvis" id="jarvisLine"></div>
   </div>
 
-  <div class="hint" id="hint">SAY “HEY JARVIS” &nbsp;·&nbsp; CLAP CLAP &nbsp;·&nbsp; SPACE = TALK &nbsp;·&nbsp; T = TYPE</div>
+  <!-- live agent-activity feed ("Jarvis is working") -->
+  <div class="missions" id="missions">
+    <div class="mhead" id="missionsHead">AGENT · ACTIVE MISSIONS</div>
+    <div id="missionList"></div>
+  </div>
+
+  <div class="hint" id="hint">SAY “HEY JARVIS” &nbsp;·&nbsp; CLAP CLAP &nbsp;·&nbsp; SPACE = TALK &nbsp;·&nbsp; JUST START TYPING</div>
   <div class="conn off" id="conn">LINK: OFFLINE</div>
+
+  <!-- compact corner mode: shown while the agent works so you can watch the real windows -->
+  <div id="compact" title="Click to open JARVIS">
+    <div class="cring"></div>
+    <div class="clabel" id="clabel">WORKING…</div>
+    <div class="chint">click to open</div>
+  </div>
   <div class="winctrls">
+    <div class="wbtn" id="demobtn"  title="Play showcase demo (great for recording)">&#x25B6;</div>
+    <div class="wbtn" id="recbtn"   title="Record the HUD to a shareable clip">&#x23FA;</div>
     <div class="wbtn" id="gear"     title="Settings">&#x2699;</div>
     <div class="wbtn" id="minbtn"   title="Minimize">&#x2013;</div>
     <div class="wbtn" id="maxbtn"   title="Maximize">&#x25A2;</div>
@@ -212,9 +347,9 @@
         <label>Anthropic API key <span style="opacity:.6">— makes JARVIS reply in ~1s</span></label>
         <input id="set_anthropic_key" type="password" placeholder="paste key from console.anthropic.com (sk-ant-…)" />
       </div>
-      <div class="field hide-field" id="f_groq">
-        <label>Groq API key</label>
-        <input id="set_groq_key" type="password" placeholder="paste free key from console.groq.com" />
+      <div class="field" id="f_groq">
+        <label>&#9889; Instant replies <span style="opacity:.6">— paste a FREE Groq key for sub-second answers</span></label>
+        <input id="set_groq_key" type="password" placeholder="free key from console.groq.com — JARVIS switches to it automatically" />
       </div>
       <div class="field hide-field" id="f_ollama">
         <label>Ollama model name</label>
@@ -367,6 +502,7 @@ function setMode(m){
   S.spinTarget=p.spin;
   const el=document.getElementById('stateLabel');
   el.textContent=p.label;
+  el.classList.remove('pulse'); void el.offsetWidth; el.classList.add('pulse');  // retrigger kick
   document.documentElement.style.setProperty('--accent', p.a.join(','));
   document.documentElement.style.setProperty('--accent2', p.b.join(','));
   S.flash=1;                                  // bloom pulse on every transition
@@ -820,7 +956,13 @@ const userLine=document.getElementById('userLine');
 const jarvisLine=document.getElementById('jarvisLine');
 let typeTimer=null;
 function showUser(text){
-  userLine.textContent=text; userLine.classList.add('show');
+  userLine.textContent=text; userLine.classList.add('show'); userLine.classList.remove('live');
+}
+/* live transcription while the mic is open — shows what JARVIS is hearing, word by
+   word. Empty text shows a "listening…" cue so the user knows the mic is active. */
+function showUserLive(text){
+  userLine.classList.add('show','live');
+  userLine.textContent = text || 'listening…';
 }
 function typeJarvis(text){
   clearInterval(typeTimer);
@@ -925,6 +1067,7 @@ function handle(m){
       }
       break;
     case 'user': showUser(m.text||''); break;
+    case 'user_partial': showUserLive(m.text||''); break;
     case 'jarvis_stream': streamJarvis(m.text||''); break;
     case 'jarvis':
       if(window.__streaming){ settleJarvis(m.text||''); window.__streaming=false; }
@@ -933,11 +1076,78 @@ function handle(m){
     case 'telemetry': setTelem(m.cpu, m.mem); break;
     case 'brain': document.getElementById('brainVal').textContent='BRAIN: '+(m.name||'----').toUpperCase(); break;
     case 'status': document.getElementById('online').textContent=(m.text||'SYSTEM ONLINE').toUpperCase(); break;
+    case 'mission': renderMission(m.mission||{}); break;
+    case 'compact': setCompact(m.on, m.label||''); break;
     case 'config': applyConfigToPanel(m.config||{}); break;
     case 'pulse': triggerClap(); break;   // clap detected → shockburst
     case 'boot_done': finishBoot(); break;
   }
 }
+
+/* ═══ agent activity feed ("Jarvis is working") ══════════════ */
+const missionEls={};          // id -> card element
+const missionTimers={};       // id -> fade timeout
+function renderMission(mn){
+  if(!mn || !mn.id) return;
+  const list=$('missionList'), wrap=$('missions');
+  let card=missionEls[mn.id];
+  if(!card){
+    card=document.createElement('div');
+    card.className='mcard';
+    list.appendChild(card);
+    missionEls[mn.id]=card;
+    requestAnimationFrame(()=>requestAnimationFrame(()=>card.classList.add('in')));
+    // keep at most 4 cards on screen — retire the oldest
+    const ids=Object.keys(missionEls);
+    if(ids.length>4){ dropMission(ids[0]); }
+  }
+  const status=mn.status||'running';
+  card.classList.toggle('done', status==='done');
+  card.classList.toggle('error', status==='error');
+  const tag = mn.tag || (status==='done'?'DONE':status==='error'?'FAILED':'WORKING');
+  const steps=(mn.steps||[]).map(s=>{
+    const st=s.state||'pending';
+    const det=s.detail? `<span class="det">${esc(s.detail)}</span>`:'';
+    return `<div class="mstep ${st}"><span class="ic"></span><span class="lbl">${esc(s.label||'')}${det}</span></div>`;
+  }).join('');
+  card.innerHTML =
+    `<div class="mtitle"><span>${esc(mn.title||'Working…')}</span><span class="mtag">${esc(tag)}</span></div>`+steps;
+  // header visibility + deepen the ambient glow while the agent is working
+  wrap.classList.add('active');
+  refreshWorkingGlow();
+  // auto-retire finished missions after a beat
+  clearTimeout(missionTimers[mn.id]);
+  if(status==='done'||status==='error'){
+    missionTimers[mn.id]=setTimeout(()=>dropMission(mn.id), 8000);
+  }
+}
+function dropMission(id){
+  const card=missionEls[id];
+  if(!card) return;
+  clearTimeout(missionTimers[id]);
+  card.classList.remove('in');
+  setTimeout(()=>{ try{card.remove();}catch(_){}}, 520);
+  delete missionEls[id]; delete missionTimers[id];
+  if(!Object.keys(missionEls).length) $('missions').classList.remove('active');
+  refreshWorkingGlow();
+}
+/* the ambient vignette glows brighter while any mission is still running */
+function refreshWorkingGlow(){
+  const running=Object.values(missionEls).some(c=>!c.classList.contains('done')&&!c.classList.contains('error'));
+  $('depth').classList.toggle('working', running);
+}
+function esc(s){ return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+/* ═══ compact corner mode ═════════════════════════════════════ */
+function setCompact(on, label){
+  document.body.classList.toggle('compact', !!on);
+  if(on){ const el=document.getElementById('clabel'); if(el) el.textContent=(label||'working').toUpperCase(); }
+}
+/* click the little corner reactor to bring JARVIS back to full size */
+(function(){
+  const c=document.getElementById('compact');
+  if(c) c.addEventListener('click', ()=>{ if(ws && ws.readyState===1) ws.send(JSON.stringify({type:'win', action:'restore_full'})); });
+})();
 
 /* click the core to trigger push-to-talk */
 canvas.addEventListener('click',(e)=>{
@@ -954,7 +1164,7 @@ function isTyping(){ const a=document.activeElement; return a && (a.tagName==='I
 
 /* ═══ command bar (keyboard input) ═══════════════════════════ */
 const cmdbar=$('cmdbar'), cmdinput=$('cmdinput');
-function openCmd(){ cmdbar.classList.add('show'); setTimeout(()=>cmdinput.focus(),30); }
+function openCmd(){ cmdbar.classList.add('show'); cmdinput.focus(); }
 function closeCmd(){ cmdbar.classList.remove('show'); cmdinput.blur(); cmdinput.value=''; }
 function sendCmd(){
   const t=cmdinput.value.trim(); if(!t) return;
@@ -966,6 +1176,49 @@ cmdinput.addEventListener('keydown',(e)=>{
   e.stopPropagation();
   if(e.key==='Enter'){ e.preventDefault(); sendCmd(); }
   else if(e.key==='Escape'){ e.preventDefault(); closeCmd(); }
+});
+
+/* ═══ showcase demo + one-click recorder (for social media) ═══ */
+$('demobtn').addEventListener('click', ()=>{ if(ws&&ws.readyState===1) ws.send(JSON.stringify({type:'demo'})); });
+
+let mediaRec=null, recChunks=[], recStream=null;
+const recbtn=$('recbtn');
+async function startRec(){
+  try{
+    // Best result: capture the whole HUD window + audio (JARVIS's actual voice).
+    try{
+      recStream = await navigator.mediaDevices.getDisplayMedia({ video:{ frameRate:30 }, audio:true });
+    }catch(_){
+      // Fallback that always works with no permission prompt: the HUD canvas itself.
+      recStream = canvas.captureStream(30);
+    }
+    const mime = ['video/webm;codecs=vp9','video/webm;codecs=vp8','video/webm']
+                   .find(m=>window.MediaRecorder && MediaRecorder.isTypeSupported(m)) || 'video/webm';
+    recChunks=[];
+    mediaRec = new MediaRecorder(recStream, { mimeType:mime, videoBitsPerSecond:6000000 });
+    mediaRec.ondataavailable = (e)=>{ if(e.data && e.data.size) recChunks.push(e.data); };
+    mediaRec.onstop = ()=>{
+      try{ recStream.getTracks().forEach(t=>t.stop()); }catch(_){}
+      const blob = new Blob(recChunks, { type:'video/webm' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = 'jarvis-'+Date.now()+'.webm';
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(()=>URL.revokeObjectURL(url), 5000);
+    };
+    mediaRec.start();
+    recbtn.classList.add('rec-on'); recbtn.title='Stop recording & save clip';
+  }catch(err){
+    console.log('recording unavailable:', err);
+    recbtn.classList.remove('rec-on');
+  }
+}
+function stopRec(){
+  try{ if(mediaRec && mediaRec.state!=='inactive') mediaRec.stop(); }catch(_){}
+  recbtn.classList.remove('rec-on'); recbtn.title='Record the HUD to a shareable clip';
+}
+recbtn.addEventListener('click', ()=>{
+  if(mediaRec && mediaRec.state==='recording') stopRec(); else startRec();
 });
 
 /* ═══ settings panel ═════════════════════════════════════════ */
@@ -1001,7 +1254,7 @@ function setSelectValue(sel,val){
 function toggleBrainFields(){
   const b=$('set_brain').value;
   $('f_anthropic').classList.toggle('hide-field', b!=='anthropic');
-  $('f_groq').classList.toggle('hide-field', b!=='groq');
+  // f_groq stays visible always — it's the recommended free speed path.
   $('f_ollama').classList.toggle('hide-field', b!=='ollama');
 }
 function openSettings(){ if(ws&&ws.readyState===1) ws.send(JSON.stringify({type:'get_config'})); settings.classList.add('show'); }
@@ -1034,9 +1287,12 @@ settings.addEventListener('click',(e)=>{ if(e.target===settings) closeSettings()
 /* ═══ global keys ════════════════════════════════════════════ */
 addEventListener('keydown',(e)=>{
   if(isTyping()){ if(e.key==='Escape') closeSettings(); return; }
-  if(e.code==='Space'){ e.preventDefault(); if(ws&&ws.readyState===1) ws.send(JSON.stringify({type:'push_to_talk'})); }
-  else if(e.key==='t'||e.key==='T'||e.key==='/'){ e.preventDefault(); openCmd(); }
-  else if(e.key==='Escape'){ closeCmd(); closeSettings(); if(ws&&ws.readyState===1) ws.send(JSON.stringify({type:'stop'})); }
+  if(settings.classList.contains('show')){ if(e.key==='Escape') closeSettings(); return; }
+  if(e.code==='Space'){ e.preventDefault(); if(ws&&ws.readyState===1) ws.send(JSON.stringify({type:'push_to_talk'})); return; }
+  if(e.key==='Escape'){ closeCmd(); closeSettings(); if(ws&&ws.readyState===1) ws.send(JSON.stringify({type:'stop'})); return; }
+  // Just start typing — any printable key opens the command bar and the keystroke
+  // lands straight in it (no need to press T or / first). Space stays push-to-talk.
+  if(e.key.length===1 && !e.ctrlKey && !e.metaKey && !e.altKey){ openCmd(); }
 });
 
 /* ═══ window controls (minimize / maximize / close) ═════════════ */

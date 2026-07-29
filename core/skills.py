@@ -61,6 +61,39 @@ CLOSE_APPS = {
     "file explorer": "explorer.exe", "task manager": "Taskmgr.exe",
 }
 
+# words that mark an "open X" as a media request → play it on YouTube
+_MEDIA_HINTS = ("music", "song", "songs", "playlist", "mix", "radio", "soundtrack",
+                "album", "track", "tracks", "tune", "tunes", "podcast", "lofi",
+                "lo-fi", "beats", "livestream", "live stream", "audiobook", "anthem")
+
+# "play X" idioms that are conversation, not media/YouTube requests
+_PLAY_IDIOMS = {
+    "devil's advocate", "devils advocate", "it cool", "it safe", "it by ear",
+    "dumb", "along", "nice", "fair", "hard to get", "hardball", "the fool",
+    "god", "dead", "possum", "house", "pretend", "favorites", "favourites",
+}
+
+# ── live research ("research X", "download pdfs about X") ─────────────────
+_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+       "(KHTML, like Gecko) Chrome/122.0 Safari/537.36")
+# fuzzy spellings of "research" — voice transcription and quick typing mangle it
+_RESEARCH = (r"(?:research|reserch|reasearch|researh|resarch|rechearch|"
+             r"rresaerch|rersearch|rreserch|reaserch)")
+RESEARCH_DIR = Path.home() / "Documents" / "Jarvis Research"
+# run heavy Claude-agent subprocesses BELOW normal priority (+ no console window) so a
+# working agent never starves JARVIS's own voice/UI responsiveness. Windows-only flags.
+_LOWPRIO = 0
+if os.name == "nt":
+    _LOWPRIO = (getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0x00004000)
+                | getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
+# a captured "topic" that reduces to one of these is noise, not a subject to research
+_NOISE_TOPICS = {
+    "the", "a", "an", "some", "my", "your", "our", "this", "that", "these", "those",
+    "it", "them", "stuff", "thing", "things", "one", "ones", "here", "there",
+    "pdf", "pdfs", "document", "documents", "doc", "docs", "file", "files", "folder",
+    "article", "articles", "paper", "papers", "page", "pages", "browser", "internet",
+}
+
 JOKES = [
     "Why did the programmer quit his job? He didn't get arrays.",
     "I told my computer I needed a break, and now it won't stop sending me KitKat ads.",
@@ -166,9 +199,31 @@ def _safe_math(expr: str) -> float:
     return ev(ast.parse(expr, mode="eval"))
 
 
+class _InlineMission:
+    """A no-op Mission stand-in for when there's no background runner (unit tests
+    or a degraded launch): step/note are silent, speak() goes straight to TTS."""
+
+    def __init__(self, say):
+        self.status = "running"
+        self._say = say
+
+    def step(self, label, detail=""): pass
+    def note(self, detail): pass
+
+    def speak(self, text):
+        try:
+            self._say(text)
+        except Exception:
+            pass
+
+    def finish(self, status="done", tag=None): self.status = status
+    def error(self, detail=""): self.status = "error"
+
+
 class Skills:
     def __init__(self, cfg, hud, say, last_reply=None, forget=None,
-                 describe_image=None, can_see=None):
+                 describe_image=None, can_see=None, ask_brain=None,
+                 run_mission=None, active_missions=None):
         self.cfg = cfg
         self.hud = hud
         self.say = say                # callable(text) -> speaks via the mouth
@@ -176,10 +231,16 @@ class Skills:
         self._forget = forget or (lambda: None)         # clears brain conversation memory
         self._describe_image = describe_image           # callable(question, b64)->str (vision)
         self._can_see = can_see or (lambda: True)        # is a vision-capable key configured?
+        self._ask_brain = ask_brain                     # callable(prompt)->str, for research explanations
+        self._run_mission = run_mission                 # callable(title, worker, tag)->Mission (background)
+        self._active_missions = active_missions or (lambda: [])  # titles of running missions
         self.should_exit = False
         self._reminders: list[dict] = []   # active timers/reminders/alarms
         self._rid = 0
         self._rlock = threading.Lock()     # registry touched from Timer threads too
+        self._rec_proc = None              # ffmpeg screen-recording process, if any
+        self._rec_path = None
+        self._agent_sem = threading.Semaphore(1)   # serialise heavy Claude agents (CPU)
         self._load_persisted()             # restore reminders/alarms from a prior run
 
     # ── main dispatch ───────────────────────────────────────────
@@ -190,6 +251,9 @@ class Skills:
         for fn in (
             self._exit, self._help, self._identity, self._time,
             self._datecalc, self._date, self._repeat, self._reset, self._ipaddr,
+            self._research,   # before generic open/search/youtube so it can claim the whole request
+            self._record,     # before _open, else "start recording" is caught by "start X"
+            self._instagram,  # before _open, so "open instagram insights" reads them
             self._media, self._open, self._close_app, self._search, self._youtube,
             self._volume, self._brightness, self._vision, self._screenshot, self._system,
             self._battery, self._window, self._type_text, self._clipboard,
@@ -218,7 +282,9 @@ class Skills:
                     "brightness, take screenshots, do maths and unit conversions, set timers, "
                     "reminders and alarms, take notes, define words, read the news and the "
                     "weather, tell the odd joke, close apps, lock or shut down the machine — "
-                    "and I'll happily just chat and answer whatever else is on your mind."
+                    "and I can research a topic live, opening the pages and downloading the "
+                    "PDFs right in front of you. Beyond that, I'll happily just chat and "
+                    "answer whatever else is on your mind."
                     .format(u=self.cfg.user_title))
         return None
 
@@ -254,7 +320,8 @@ class Skills:
         return None
 
     def _time(self, t, _):
-        if re.search(r"\b(what('?s| is) the time|what time is it|the time)\b", t):
+        if re.search(r"\b(what('?s| is) the time|what time is it|tell me the time"
+                     r"|(?:have you |do you have )the time|got the time)\b", t):
             return f"It is {datetime.now().strftime('%-I:%M %p') if os.name != 'nt' else datetime.now().strftime('%I:%M %p').lstrip('0')}."
         return None
 
@@ -321,6 +388,392 @@ class Skills:
         except Exception:
             return "I couldn't reach the IP service just now."
 
+    # ── live research: open pages, download & open PDFs, explain ─
+    #
+    # "research CNC and download some PDFs", "look into black holes", "download
+    # pdfs about quantum computing" → JARVIS narrates, throws the reference /
+    # video windows open on screen, pulls real PDFs off the web into your
+    # Documents and opens each one, then explains the topic in its own voice.
+    _PREFIX_RE = re.compile(
+        r"^(?:jarvis[,\s]+|hey jarvis[,\s]+|ok jarvis[,\s]+|okay jarvis[,\s]+|please\s+|"
+        r"kindly\s+|can you\s+|could you\s+|would you\s+|will you\s+|"
+        r"go\s+(?:ahead\s+and\s+|and\s+)?|i want you to\s+|i'd like you to\s+|"
+        r"i would like you to\s+|i need you to\s+|i want to\s+|i'd like to\s+|"
+        r"let'?s\s+|now\s+|help me\s+)+", re.IGNORECASE)
+
+    _TOPIC_CUT_RE = re.compile(
+        r"\b(?:on the internet|on internet|in the internet|from the internet|off the internet|"
+        r"on the web|on google|over the web|across the web|"
+        r"do everything|i want|i wanna|i would like|i'd like|i really want|show me|for me|"
+        r"so i|so that|because|right now|"
+        r"for (?:your|the|my|our|a|an|his|her|their)\b|"
+        r"to (?:make|help|write|build|understand|learn|study|prepare|do|see)\b|"
+        r"and (?:download|open|show|find|get|save|explain|give|then|pull|read)\b|"
+        r"then (?:download|open|show|find|get|save|explain|pull|read)\b|"
+        r"download|please|explanation|and explain|open them|open the pdfs?|open pdfs?)\b",
+        re.IGNORECASE)
+
+    _TOPIC_BAD_LEAD = re.compile(
+        r"^(?:shows?|showed|suggests?|suggested|found|finds?|indicates?|says?|said|proves?|"
+        r"proved|confirms?|is|are|was|were|has|have|had|paper|papers|study|studies|"
+        r"tells?|told|means?|about it|that|this|it)\b", re.IGNORECASE)
+
+    def _research_topic(self, t, original):
+        """Extract the topic from a genuine research/PDF command, or None.
+
+        Fires on imperative research phrasings ("research X", "look into X"),
+        explicit document fetches ("download pdfs about X"), and "research …"
+        paired with an action signal — while leaving conversational uses
+        ("what's the latest research on X", "the research shows …") to the brain.
+        """
+        original = (original or "").strip()
+        core = self._PREFIX_RE.sub("", original).strip()
+        raw = None
+
+        _VERB = (r"find|get|download|grab|pull|fetch|save|gather|collect|"
+                 r"open|show|bring up|pull up|look up|give")
+        _DOC = r"pdfs?|articles?|papers?|documents?|research(?:\s+papers?)?"
+        _QTY = r"(?:the\s+|a\s+|some\s+|a few\s+|a couple of\s+|me\s+)*"
+
+        # (A) imperative research: "research X", "do research on X". FIRST, so
+        #     "research black holes and download some pdfs" captures the real topic
+        #     rather than the greedy topic-before-doc pattern grabbing "some".
+        m = re.match(
+            rf"(?:do|make|run|conduct|start|begin|carry out|perform)\s+"
+            rf"(?:some\s+|a\s+|an\s+)?{_RESEARCH}"
+            rf"(?:\s+(?:about|on|into|for|regarding|of|around))?\s+(.+)", core, re.IGNORECASE)
+        if not m:
+            m = re.match(
+                rf"{_RESEARCH}(?:\s+(?:about|on|into|for|regarding|of|around))?\s+(.+)",
+                core, re.IGNORECASE)
+        if m:
+            raw = m.group(1)
+        # (B1) docs-then-topic: "download/open/show pdfs about X"
+        if raw is None:
+            m = re.search(
+                rf"\b(?:{_VERB})\s+{_QTY}(?:{_DOC})\s+"
+                rf"(?:about|on|regarding|for|related to|of|covering)\s+(.+)", original, re.IGNORECASE)
+            if m:
+                raw = m.group(1)
+        # (C) "look into X" / "read up on X" / "dig into X" / "deep dive on X"
+        if raw is None:
+            m = re.match(
+                r"(?:look into|read up on|dig into|deep dive (?:on|into)|"
+                r"do a deep dive (?:on|into)|find out (?:all )?about)\s+(.+)", core, re.IGNORECASE)
+            if m:
+                raw = m.group(1)
+        # (B2) topic-then-docs: "open some cnc pdfs" / "get X papers" (after A/B1/C
+        #      so a research/"about X" phrasing wins over this greedier pattern)
+        if raw is None:
+            m = re.search(rf"\b(?:{_VERB})\s+{_QTY}(.+?)\s+(?:{_DOC})\b", original, re.IGNORECASE)
+            if m:
+                raw = m.group(1)
+        # (B3) fetch verb + doc word both present but separated by filler
+        #      ("open pdfs in the browser about cnc") → take the "about X" tail.
+        if raw is None and re.search(rf"\b(?:{_VERB})\b", original, re.IGNORECASE) \
+                and re.search(rf"\b(?:{_DOC})\b", original, re.IGNORECASE):
+            m = re.search(r"\b(?:about|regarding|covering|on the subject of|on the topic of)\s+(.+)$",
+                          original, re.IGNORECASE)
+            if m:
+                raw = m.group(1)
+        # (D) safety net: "research" anywhere + an unambiguous action signal
+        if raw is None and re.search(rf"\b{_RESEARCH}\b", original, re.IGNORECASE) and \
+                re.search(r"\b(download|pdfs?|on the internet|online|from the internet|"
+                          r"pull up|show me|open them|articles?|papers?|documents?)\b",
+                          original, re.IGNORECASE):
+            m = re.search(rf"\b{_RESEARCH}\s+(?:about|on|into|for|regarding|of|around)?\s*(.+)",
+                          original, re.IGNORECASE)
+            if m:
+                raw = m.group(1)
+
+        return self._clean_topic(raw) if raw else None
+
+    def _clean_topic(self, raw):
+        """Strip command noise off a captured topic ('cnc on internet download pdfs'
+        → 'cnc'); return None if what's left looks conversational, not a topic."""
+        s = raw.strip().strip("?.!,\"'")
+        s = re.sub(r"^(?:about|on|into|for|regarding|of|around|the topic of|some|a|an|the|me|my|please)\s+",
+                   "", s, flags=re.IGNORECASE)
+        cut = self._TOPIC_CUT_RE.search(s)
+        if cut:
+            s = s[:cut.start()]
+        # trailing command/source noise ("… online", "… in the browser", "… for me")
+        # is not part of the topic — peel it off (possibly several layers).
+        for _ in range(3):
+            s = re.sub(r"\s+(?:online|on the internet|on the web|from the internet|"
+                       r"in (?:the |my )?browser|in (?:chrome|edge|firefox)|"
+                       r"on (?:the )?screen|on my screen|for me|please|now|"
+                       r"and open (?:them|it|the pdfs?)|open (?:them|it)|"
+                       r"and explain(?:\s+(?:it|them))?)\s*$",
+                       "", s.strip(), flags=re.IGNORECASE)
+        s = re.sub(r"\s+(?:and|on|about|of|the|for|to|in)\s*$", "", s.strip(), flags=re.IGNORECASE)
+        # strip any leftover leading article/possessive ("the pdfs"→"", "my cnc"→"cnc")
+        s = re.sub(r"^(?:the|a|an|some|my|your|our|this|that|these|those)\s+", "", s.strip(),
+                   flags=re.IGNORECASE)
+        s = s.strip(" ,.-\"'")
+        # a "topic" that's just a stopword or a document/UI word is no topic at all —
+        # leave "open the pdfs" / "open my documents folder" to the brain / _open.
+        if s.lower() in _NOISE_TOPICS or len(s) < 2:
+            return None
+        if not s or self._TOPIC_BAD_LEAD.match(s):
+            return None
+        words = s.split()
+        if len(words) > 6:               # noise leaked in — keep the head as the topic
+            s = " ".join(words[:6])
+        return s or None
+
+    def _research(self, t, original):
+        # "what are you working on / researching" → report live missions
+        status = self._mission_status(t)
+        if status:
+            return status
+        topic = self._research_topic(t, original)
+        if not topic or not getattr(self.cfg, "allow_research", True):
+            return None
+        u = self.cfg.user_title
+        ack = (f"On it, {u}. I'm researching {topic} now — opening the sources and pulling "
+               f"the PDFs while you carry on. I'll explain what I find.")
+        if self._run_mission is not None:
+            # go work in the BACKGROUND so JARVIS stays responsive ("works while
+            # you focus"); the play-by-play streams to the HUD agent panel.
+            self._run_mission(f"Researching {topic}",
+                              lambda m: self._research_worker(m, topic), tag="RESEARCH")
+            return ack
+        # degraded / unit-test path: no background runner → run inline, synchronously
+        self.say(ack)
+        try:
+            self._research_worker(_InlineMission(self.say), topic)
+        except Exception as e:  # noqa: BLE001
+            print(f"[skills] research error: {e}")
+            return f"I got partway through researching {topic}, {u}, but hit a snag."
+        return ""   # the worker has already spoken the summary + explanation
+
+    def _mission_status(self, t) -> str | None:
+        if not re.search(r"\b(what are you (working on|doing|researching)|"
+                         r"what('?s| is) (running|in progress)|any missions? running)\b", t):
+            return None
+        titles = self._active_missions()
+        u = self.cfg.user_title
+        if not titles:
+            return f"Nothing running right now, {u} — standing by."
+        if len(titles) == 1:
+            return f"Right now I'm {titles[0][0].lower() + titles[0][1:]}, {u}."
+        return f"I've got {len(titles)} on the go, {u}: " + "; ".join(titles) + "."
+
+    def _research_worker(self, mission, topic: str) -> None:
+        """The actual multi-step research, streaming progress to the mission panel.
+        Speaks only the payoff (summary + explanation) so it doesn't talk over you."""
+        u = self.cfg.user_title
+        q = requests.utils.quote(topic)
+
+        # 1) throw the reference + video windows open on screen ("windows flying")
+        mission.step("Opening web, encyclopaedia & video sources")
+        for url in (
+            "https://www.google.com/search?q=" + q,
+            "https://en.wikipedia.org/wiki/Special:Search?search=" + q,
+            "https://www.youtube.com/results?search_query="
+            + requests.utils.quote(topic + " explained"),
+        ):
+            self._open_window(url)
+
+        # 2) open the top few live articles from a real search
+        mission.step("Scanning the top live articles")
+        links = self._ddg_links(topic, 3)
+        mission.note(f"{len(links)} article{'s' if len(links) != 1 else ''} found")
+        for url in links:
+            self._open_window(url)
+
+        # 3) hunt down, download and open real PDFs
+        mission.step("Pulling PDFs off the internet")
+        folder = RESEARCH_DIR / self._safe_name(topic)
+        candidates = self._find_pdf_urls(topic, 6)
+        saved = []
+        for url in candidates:
+            mission.note(f"Downloading PDF {len(saved) + 1}…")
+            path = self._download_pdf(url, folder)
+            if path:
+                saved.append(path)
+                mission.note(f"Saved {len(saved)}: {path.name[:44]}")
+                try:
+                    os.startfile(str(path))              # type: ignore[attr-defined]
+                except Exception:
+                    pass
+                time.sleep(0.4)
+            if len(saved) >= 4:
+                break
+        if saved:
+            mission.step(f"Downloaded {len(saved)} PDF"
+                         f"{'s' if len(saved) != 1 else ''} -> Documents\\Jarvis Research")
+        else:
+            mission.step("No clean PDFs — left the web sources open")
+
+        # 4) explain it, in JARVIS's own voice
+        mission.step("Explaining the topic")
+        explanation = self._brain_explain(topic)
+        mission.finish("done", tag="DONE")
+
+        # spoken payoff (serialised through the mouth so it never overlaps a turn)
+        if saved:
+            n = len(saved)
+            mission.speak(f"Done, {u}. I pulled {n} PDF{'s' if n != 1 else ''} on {topic} into "
+                          f"your Documents and opened {'them' if n != 1 else 'it'}.")
+        else:
+            mission.speak(f"I've laid out the web sources on {topic} for you, {u}.")
+        if explanation:
+            mission.speak(explanation)
+
+    def _open_window(self, url: str) -> None:
+        """Open a URL in the browser, pausing briefly so each window registers on
+        screen (cinematic, and gentler on the browser than a burst)."""
+        try:
+            webbrowser.open(url)
+            time.sleep(0.45)
+        except Exception as e:
+            print(f"[skills] open window failed: {e}")
+
+    @staticmethod
+    def _safe_name(topic: str) -> str:
+        name = re.sub(r"[^\w\- ]+", "", topic).strip().replace(" ", "_")
+        return (name or "topic")[:60]
+
+    @staticmethod
+    def _ddg_decode(href: str):
+        """DuckDuckGo HTML results wrap the real URL in a redirect
+        (//duckduckgo.com/l/?uddg=<encoded>). Return the underlying http(s) URL."""
+        if href.startswith("//"):
+            href = "https:" + href
+        m = re.search(r"[?&]uddg=([^&]+)", href)
+        if m:
+            try:
+                return requests.utils.unquote(m.group(1))
+            except Exception:
+                return None
+        return href if href.startswith("http") else None
+
+    def _ddg_links(self, query: str, limit: int = 3) -> list:
+        """Top organic result URLs for a query, via DuckDuckGo's HTML endpoint
+        (Bing as a fallback). Best-effort and quiet on failure."""
+        urls: list = []
+        seen = set()
+
+        def add(u):
+            if not u or not u.startswith("http"):
+                return
+            base = u.split("#")[0]
+            if base in seen or any(h in base for h in
+                                   ("duckduckgo.com", "bing.com", "microsoft.com", "google.com/search")):
+                return
+            seen.add(base)
+            urls.append(u)
+
+        try:
+            r = requests.post("https://html.duckduckgo.com/html/", data={"q": query},
+                              timeout=8, headers={"User-Agent": _UA})
+            if r.status_code == 200:
+                for m in re.finditer(r'result__a[^>]+href="([^"]+)"', r.text):
+                    add(self._ddg_decode(m.group(1)))
+                    if len(urls) >= limit:
+                        return urls[:limit]
+        except Exception:
+            pass
+        if len(urls) < limit:
+            try:
+                r = requests.get("https://www.bing.com/search?q=" + requests.utils.quote(query),
+                                 timeout=8, headers={"User-Agent": _UA})
+                if r.status_code == 200:
+                    for m in re.finditer(r'<h2>\s*<a[^>]+href="(https?://[^"]+)"', r.text):
+                        add(m.group(1))
+                        if len(urls) >= limit:
+                            break
+            except Exception:
+                pass
+        return urls[:limit]
+
+    def _find_pdf_urls(self, topic: str, limit: int = 6) -> list:
+        """Candidate PDF URLs for a topic — those advertising .pdf first, then the
+        rest of the results (some PDFs don't show .pdf in the URL) as a backstop."""
+        found = self._ddg_links(topic + " filetype:pdf", limit * 3)
+        ordered = [u for u in found if ".pdf" in u.lower()]
+        ordered += [u for u in found if u not in ordered]
+        seen, out = set(), []
+        for u in ordered:
+            if u not in seen:
+                seen.add(u)
+                out.append(u)
+        return out[:limit]
+
+    def _download_pdf(self, url: str, folder):
+        """Download a PDF (verifying it really is one) into ``folder``; return the
+        saved Path or None. Bounded by timeout and a 30 MB cap so a hostile or huge
+        file can neither hang the turn nor fill the disk."""
+        try:
+            r = requests.get(url, timeout=(6, 25), stream=True,
+                             headers={"User-Agent": _UA}, allow_redirects=True)
+        except Exception:
+            return None
+        try:
+            if r.status_code != 200:
+                return None
+            ct = (r.headers.get("Content-Type") or "").lower()
+            if "pdf" not in ct and not url.lower().split("?")[0].endswith(".pdf"):
+                return None
+            folder.mkdir(parents=True, exist_ok=True)
+            path = folder / self._pdf_filename(url)
+            total = 0
+            try:
+                with path.open("wb") as f:
+                    for chunk in r.iter_content(65536):
+                        if not chunk:
+                            continue
+                        total += len(chunk)
+                        if total > 30_000_000:       # 30 MB cap
+                            break
+                        f.write(chunk)
+            except Exception:
+                try:
+                    path.unlink()
+                except Exception:
+                    pass
+                return None
+        finally:
+            r.close()
+        # verify the magic bytes so we never open a saved 404/HTML page as a PDF
+        try:
+            with path.open("rb") as f:
+                if not f.read(5).startswith(b"%PDF"):
+                    path.unlink()
+                    return None
+        except Exception:
+            return None
+        return path
+
+    @staticmethod
+    def _pdf_filename(url: str) -> str:
+        tail = url.split("?")[0].rstrip("/").split("/")[-1] or "document"
+        try:
+            tail = requests.utils.unquote(tail)
+        except Exception:
+            pass
+        tail = re.sub(r"[^\w\-. ]+", "_", tail).strip() or "document"
+        if not tail.lower().endswith(".pdf"):
+            tail += ".pdf"
+        return tail[:80]
+
+    def _brain_explain(self, topic: str) -> str:
+        """A compact spoken explanation of the topic, via the brain. Best-effort:
+        returns '' if no brain is wired or it fails, so research still concludes."""
+        if not self._ask_brain:
+            return ""
+        prompt = (f"Give {self.cfg.user_title} a clear, engaging spoken explanation of "
+                  f"\"{topic}\" in about four sentences — what it is, why it matters, and one "
+                  f"genuinely interesting detail. Natural spoken English only: no lists, no "
+                  f"markdown, no headings.")
+        try:
+            return (self._ask_brain(prompt) or "").strip()
+        except Exception as e:  # noqa: BLE001
+            print(f"[skills] research explanation failed: {e}")
+            return ""
+
     # ── launching ───────────────────────────────────────────────
     def _open(self, t, original):
         m = re.search(r"\b(?:open|launch|start|run)\s+(.+)", t)
@@ -341,6 +794,10 @@ class Skills:
         if re.match(r"^[\w-]+\.\w{2,}$", target):
             webbrowser.open("https://" + target)
             return f"Opening {target}."
+        # "open lofi music", "open some jazz playlist" → that's a media request;
+        # play it on YouTube rather than treating it as an app to launch.
+        if any(h in target for h in _MEDIA_HINTS):
+            return self._play_on_youtube(re.sub(r"^(?:some|the|a|an)\s+", "", target).strip())
         # last resort: only for a PLAUSIBLE single target (an app token or a path),
         # never a multi-word phrase like "start over with the plan" — those are
         # conversation, not launch commands, so let the brain field them.
@@ -362,24 +819,69 @@ class Skills:
                 subprocess.Popen(["cmd", "/c", "start", "", cmd])
 
     def _search(self, t, original):
-        m = re.search(r"\b(?:search(?: for)?|google|look up)\s+(.+)", t)
+        if "youtube" in t or "you tube" in t:      # handled by _youtube
+            return None
+        m = re.search(r"\b(?:search (?:the )?(?:web|internet|net) for|search youtube for|"
+                      r"search for|search|google|look up|look for|find me)\s+(.+)", t)
         if not m:
             return None
-        if "youtube" in t:      # handled by _youtube
+        q = m.group(1).strip(" ,.?!")
+        q = re.sub(r"^(?:for|me|the\s+(?:web|internet|net)\s+for)\s+", "", q).strip()
+        if not q:
             return None
-        q = m.group(1).strip()
         webbrowser.open("https://www.google.com/search?q=" + requests.utils.quote(q))
         return f"Here are the results for {q}, {self.cfg.user_title}."
 
     def _youtube(self, t, original):
-        m = re.search(r"\b(?:play|search youtube for|find on youtube|youtube)\s+(.+?)(?:\s+on youtube)?$", t)
-        if not m or ("youtube" not in t and "play" not in t):
-            return None
-        q = re.sub(r"\bon youtube\b", "", m.group(1)).strip()
+        # Every natural way of asking for a video/song → find it on YouTube and play
+        # it: "play X", "put on X", "find/search/pull up X on youtube",
+        # "search youtube for X", "X on youtube", "watch X on youtube".
+        has_yt = "youtube" in t or "you tube" in t
+        m = None
+        if has_yt:
+            m = (re.search(r"\b(?:search you\s?tube for|on you\s?tube search for)\s+(.+)", t)
+                 or re.search(r"\b(?:play|put on|listen to|find|search|search for|look up|"
+                              r"look for|pull up|bring up|open|watch|show me|get)\s+"
+                              r"(.+?)\s+on\s+you\s?tube\b", t)
+                 or re.search(r"^\s*(.+?)\s+on\s+you\s?tube\b", t)
+                 or re.search(r"\byou\s?tube\s+(.+)", t))
+        if m is None:
+            # natural media intent WITHOUT the word "youtube": "play/put on/listen to X"
+            m = re.search(r"\b(?:play|put on|listen to|watch)\s+(.+?)(?:\s+on repeat|\s+please)?$", t)
+            if not m or not re.search(r"\b(?:play|put on|listen to|watch)\b", t):
+                return None
+        q = re.sub(r"\b(?:on\s+)?you\s?tube\b", "", m.group(1), flags=re.IGNORECASE).strip()
+        q = re.sub(r"^(?:some|the|a|an|me|for)\s+", "", q).strip(" ,.?!")
         if not q:
             return None
-        webbrowser.open("https://www.youtube.com/results?search_query=" + requests.utils.quote(q))
-        return f"Playing {q} on YouTube, {self.cfg.user_title}."
+        # "play devil's advocate", "play it cool", "play along" … are idioms, not
+        # media requests — let the brain field them rather than opening YouTube.
+        ql = q.lower()
+        if not has_yt and any(ql == p or ql.startswith(p + " ") for p in _PLAY_IDIOMS):
+            return None
+        return self._play_on_youtube(q)
+
+    def _play_on_youtube(self, query: str) -> str:
+        """Open the FIRST YouTube result for ``query`` so it starts playing straight
+        away — we scrape the results page for the top videoId and open the watch
+        page. Falls back to the plain results page if the scrape fails."""
+        query = query.strip()
+        watch = None
+        try:
+            r = requests.get(
+                "https://www.youtube.com/results?search_query=" + requests.utils.quote(query),
+                timeout=6, headers={"User-Agent": "Mozilla/5.0"})
+            if r.status_code == 200:
+                m = re.search(r'"videoId":"([\w-]{11})"', r.text)
+                if m:
+                    watch = f"https://www.youtube.com/watch?v={m.group(1)}"
+        except Exception:
+            watch = None
+        if watch:
+            webbrowser.open(watch)
+            return f"Playing {query} on YouTube, {self.cfg.user_title}."
+        webbrowser.open("https://www.youtube.com/results?search_query=" + requests.utils.quote(query))
+        return f"Here's {query} on YouTube, {self.cfg.user_title}."
 
     # ── volume ──────────────────────────────────────────────────
     def _volume(self, t, _):
@@ -447,28 +949,301 @@ class Skills:
     # ── screen vision ("what's on my screen") ───────────────────
     def _vision(self, t, _):
         if not re.search(r"\b(what('?s| is) on (my |the )?screen|describe (my |the )?screen|"
-                         r"read (my |the )?screen|what am i looking at|look at (my |the )?screen)\b", t):
+                         r"read (my |the )?screen|what am i looking at|look at (my |the )?screen|"
+                         r"can you see (my |the )?screen|see my screen)\b", t):
             return None
-        if self._describe_image is None:
-            return None
-        if not self._can_see():
-            # no vision-capable key → don't grab the screen at all; guide instead.
-            return (f"To see your screen I need an Anthropic API key, {self.cfg.user_title}. "
-                    f"Add one in the settings gear and I'll be able to look.")
+        u = self.cfg.user_title
+        # fast native vision (Anthropic API) if a key is set; otherwise let the agent
+        # read a screenshot (works with just the Claude subscription, a bit slower).
+        fast = self._can_see() and self._describe_image is not None
+        agent_ok = self._run_mission is not None and getattr(self.cfg, "allow_agentic", True)
+        if not fast and not agent_ok:
+            if self._describe_image is None:
+                return None      # nothing wired → let the brain field it
+            return (f"To see your screen I need an Anthropic key, {u} — add one in the gear "
+                    f"for instant vision, or keep the agent on and I'll read it for you.")
+        question = "In two or three short spoken sentences, describe what is currently on my screen."
+        if self._run_mission is None:
+            # degraded / tests: synchronous fast path (HUD may be in the frame)
+            try:
+                from PIL import ImageGrab
+                import base64, io
+                img = ImageGrab.grab()
+                img.thumbnail((1280, 1280))
+                buf = io.BytesIO()
+                img.convert("RGB").save(buf, format="JPEG", quality=70)
+                b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+            except Exception as e:
+                return f"I couldn't capture the screen — {e}."
+            return self._describe_image(question, b64)
+        # mission path: the HUD shrinks aside first (VISION tag), THEN we capture the
+        # screen behind it — otherwise the reactor fills the shot.
+        self._run_mission("Looking at your screen",
+                          lambda m: self._screen_read_worker(m, fast, question), tag="VISION")
+        return f"Let me take a look, {u}."
+
+    def _screen_read_worker(self, mission, fast: bool, question: str) -> None:
+        """Wait for the HUD to shrink out of the way, capture the screen, and read it —
+        fast (Anthropic) or via the Read-only agent."""
+        u = self.cfg.user_title
+        time.sleep(1.3)                      # let the HUD actually collapse to the corner first
         try:
             from PIL import ImageGrab
-            import base64
-            import io
-            img = ImageGrab.grab()
-            img.thumbnail((1280, 1280))     # cap size -> fewer tokens, faster
-            buf = io.BytesIO()
-            img.convert("RGB").save(buf, format="JPEG", quality=70)
-            b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+            shot = ImageGrab.grab()
         except Exception as e:
-            return f"I couldn't capture the screen — {e}."
-        return self._describe_image(
-            "In two or three short spoken sentences, describe what is currently on my screen.",
-            b64)
+            mission.error("couldn't capture the screen")
+            mission.speak(f"I couldn't grab the screen, {u} — {e}.")
+            return
+        if fast:
+            try:
+                import base64, io
+                shot.thumbnail((1280, 1280))
+                buf = io.BytesIO()
+                shot.convert("RGB").save(buf, format="JPEG", quality=70)
+                b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+                desc = (self._describe_image(question, b64) or "").strip()
+            except Exception:
+                desc = ""
+            mission.finish("done", tag="SEEN")
+            mission.speak(desc or f"I couldn't quite read the screen, {u}.")
+            return
+        try:
+            folder = Path.home() / "Pictures" / "Jarvis"
+            folder.mkdir(parents=True, exist_ok=True)
+            path = folder / f"_screen_{int(time.time())}.png"
+            shot.save(path)
+        except Exception as e:
+            mission.error("couldn't save the screen")
+            mission.speak(f"I couldn't save the screen to look at, {u}.")
+            return
+        self._vision_worker(mission, path, ask=question)
+
+    # ── Instagram insights ("check my instagram reels stats") ───
+    def _instagram(self, t, original):
+        if not re.search(r"\b(instagram|insta|\big\b)\b", t):
+            return None
+        u = self.cfg.user_title
+        wants = re.search(
+            r"\b(insight|insights|stat|stats|statistic|statistics|analytic|analytics|performance|"
+            r"reels?|views|plays|reach|impression|impressions|engagement|followers?|"
+            r"how('?s| is| are) (?:my|it|they)|doing|numbers|metrics)\b", t)
+        if not wants:
+            if re.search(r"\b(open|go to|launch|show me|pull up|check)\b", t):
+                webbrowser.open("https://www.instagram.com/")
+                return f"Opening Instagram, {u}."
+            return None
+        # open the desktop surfaces where Reels numbers live (uses your logged-in browser)
+        for url in ("https://business.facebook.com/latest/insights/content",
+                    "https://www.instagram.com/"):
+            try:
+                webbrowser.open(url)
+                time.sleep(0.4)
+            except Exception:
+                pass
+        if self._run_mission is None:
+            return (f"I've opened your Instagram insights, {u}. Say 'what's on my screen' once "
+                    f"the numbers are up and I'll read them.")
+        ask = ("This screenshot shows my Instagram / Meta Business Suite insights. Read out the key "
+               "numbers for my recent Reels — views or plays, reach, likes and engagement — in a "
+               "few short spoken sentences. If the insights aren't visible yet, tell me to open "
+               "the Reels insights.")
+
+        def worker(mission):
+            mission.step("Opening your Instagram insights")
+            time.sleep(9)                    # dashboard load + HUD shrink aside
+            mission.step("Reading your Reels numbers")
+            try:
+                from PIL import ImageGrab
+                folder = Path.home() / "Pictures" / "Jarvis"
+                folder.mkdir(parents=True, exist_ok=True)
+                path = folder / f"_ig_{int(time.time())}.png"
+                ImageGrab.grab().save(path)
+            except Exception as e:
+                mission.error("couldn't capture the screen")
+                mission.speak(f"I couldn't grab your Instagram screen, {u}.")
+                return
+            self._vision_worker(mission, path, ask=ask)
+
+        self._run_mission("Instagram insights", worker, tag="VISION")
+        return f"Pulling up your Instagram insights, {u} — I'll read what I can see."
+
+    def _vision_worker(self, mission, img_path, ask: str = None) -> None:
+        """Have the Claude agent read a screenshot and speak an answer about it. Uses the
+        Read tool only (no system access needed just to look), so it's the lighter
+        agent invocation. ``ask`` customises the question (e.g. Instagram insights)."""
+        u = self.cfg.user_title
+        mission.step("Looking at the screen")
+        question = ask or ("In two or three short, natural spoken sentences, tell me what is "
+                           "on the screen.")
+        prompt = (f"Read the image file at {img_path} — it is a screenshot of my screen. "
+                  f"{question} Output ONLY the answer, nothing else.")
+        try:
+            import shutil as _sh
+            claude = _sh.which("claude") or "claude"
+            proc = subprocess.run(
+                [claude, "-p", "--output-format", "json", "--allowedTools", "Read",
+                 "--permission-mode", "acceptEdits", prompt],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=150, cwd=str(Path.home()), creationflags=_LOWPRIO,
+            )
+            import json as _json
+            try:
+                res = _json.loads(proc.stdout).get("result", "")
+            except Exception:
+                res = (proc.stdout or "").strip()
+            mission.finish("done", tag="SEEN")
+            mission.speak(res.strip() or f"I couldn't quite make out the screen, {u}.")
+        except Exception as e:  # noqa: BLE001
+            print(f"[skills] vision worker error: {e}")
+            mission.error("couldn't read the screen")
+            mission.speak(f"I couldn't get a clear look at the screen, {u}.")
+        finally:
+            try:
+                os.remove(img_path)
+            except Exception:
+                pass
+
+    # ── screen recording (ffmpeg gdigrab → mp4) ─────────────────
+    def _record(self, t, _):
+        u = self.cfg.user_title
+        start = re.search(
+            r"\b(?:start (?:the )?recording|record a video|record my video|take a video|"
+            r"capture (?:a )?video|screen record|"
+            r"record(?:ing)?\s+(?:[\w']+\s+){0,3}?(?:screen|monitor|display|desktop))\b", t)
+        stop = re.search(r"\b(stop recording|stop the recording|end recording|"
+                         r"finish recording|stop the video|end the recording)\b", t)
+        if not start and not stop:
+            return None
+        if stop:
+            if not self._rec_proc or self._rec_proc.poll() is not None:
+                self._rec_proc = None
+                return f"I'm not recording anything right now, {u}."
+            path = self._rec_path
+            try:
+                # ffmpeg stops cleanly (and finalises the mp4) when it receives 'q'
+                if self._rec_proc.stdin:
+                    self._rec_proc.stdin.write(b"q")
+                    self._rec_proc.stdin.flush()
+                self._rec_proc.wait(timeout=8)
+            except Exception:
+                try:
+                    self._rec_proc.terminate()
+                    self._rec_proc.wait(timeout=5)
+                except Exception:
+                    pass
+            self._rec_proc = None
+            if path:
+                try:
+                    os.startfile(str(path))          # type: ignore[attr-defined]
+                except Exception:
+                    pass
+            return f"Recording saved to your Videos, under Jarvis, {u}."
+        # start
+        if self._rec_proc and self._rec_proc.poll() is None:
+            return f"I'm already recording, {u}. Say 'stop recording' when you're done."
+        import shutil as _sh
+        ffmpeg = _sh.which("ffmpeg") or "ffmpeg"
+        folder = Path.home() / "Videos" / "Jarvis"
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / f"recording_{int(time.time())}.mp4"
+        # figure out WHICH screen to record
+        mon, where = self._pick_record_monitor(t)
+        grab = ["-f", "gdigrab", "-framerate", "30"]
+        if mon is not None:
+            grab += ["-offset_x", str(mon["left"]), "-offset_y", str(mon["top"]),
+                     "-video_size", f'{mon["width"]}x{mon["height"]}']
+        grab += ["-i", "desktop"]
+        try:
+            self._rec_proc = subprocess.Popen(
+                [ffmpeg, "-y", *grab,
+                 "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", str(path)],
+                stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            self._rec_path = path
+        except Exception as e:
+            self._rec_proc = None
+            return f"I couldn't start recording — {e}."
+        return f"Recording {where} now, {u}. Say 'stop recording' when you're done."
+
+    # ── monitor discovery + which-screen-to-record logic ────────
+    def _pick_record_monitor(self, t):
+        """Decide which monitor to record from the phrasing. Returns (monitor|None,
+        spoken_where). ``None`` monitor means the whole (multi-screen) desktop."""
+        mons = self._monitors()
+        whole = re.search(r"\b(whole|entire|all|both|everything|all screens?|all monitors?)\b", t)
+        if len(mons) <= 1:
+            return (mons[0] if mons else None, "your screen")
+        if whole:
+            return None, "all your screens"
+        m = re.search(r"\b(?:screen|monitor|display)\s*(?:number\s*)?(\d+)\b", t) \
+            or re.search(r"\b(\d+)(?:st|nd|rd|th)?\s+(?:screen|monitor|display)\b", t)
+        if m:
+            idx = int(m.group(1)) - 1
+            if 0 <= idx < len(mons):
+                return mons[idx], f"screen {idx + 1}"
+        if re.search(r"\b(this|current|active|the one i'm on|where i am)\b", t):
+            fg = self._foreground_monitor(mons)
+            if fg:
+                return fg, "this screen"
+        if re.search(r"\b(other|second|2nd|next)\b", t):
+            other = next((x for x in mons if not x.get("primary")), None)
+            if other:
+                return other, "the second screen"
+        if re.search(r"\b(main|primary|first)\b", t):
+            prim = next((x for x in mons if x.get("primary")), mons[0])
+            return prim, "your main screen"
+        # default: the screen you're actually working on (foreground window), else primary
+        fg = self._foreground_monitor(mons)
+        if fg:
+            return fg, "the screen you're on"
+        prim = next((x for x in mons if x.get("primary")), mons[0])
+        return prim, "your main screen"
+
+    @staticmethod
+    def _monitors():
+        """Enumerate physical monitor rectangles, left→right. Empty on non-Windows."""
+        out = []
+        try:
+            import ctypes
+            from ctypes import wintypes
+            user32 = ctypes.windll.user32
+            user32.SetProcessDPIAware()
+            CB = ctypes.WINFUNCTYPE(ctypes.c_int, ctypes.c_ulong, ctypes.c_ulong,
+                                    ctypes.POINTER(wintypes.RECT), ctypes.c_double)
+
+            def _cb(hMon, hdc, lprc, lparam):
+                r = lprc.contents
+                out.append({"left": int(r.left), "top": int(r.top),
+                            "width": int(r.right - r.left), "height": int(r.bottom - r.top)})
+                return 1
+            user32.EnumDisplayMonitors(0, 0, CB(_cb), 0)
+        except Exception as e:
+            print(f"[skills] monitor enum failed: {e}")
+            return []
+        for mo in out:
+            mo["primary"] = (mo["left"] == 0 and mo["top"] == 0)
+        out.sort(key=lambda mo: (mo["left"], mo["top"]))
+        return out
+
+    @staticmethod
+    def _foreground_monitor(mons):
+        """The monitor containing the centre of the current foreground window."""
+        try:
+            import ctypes
+            from ctypes import wintypes
+            u = ctypes.windll.user32
+            hwnd = u.GetForegroundWindow()
+            r = wintypes.RECT()
+            u.GetWindowRect(hwnd, ctypes.byref(r))
+            cx = (r.left + r.right) // 2
+            cy = (r.top + r.bottom) // 2
+            for mo in mons:
+                if mo["left"] <= cx < mo["left"] + mo["width"] and \
+                        mo["top"] <= cy < mo["top"] + mo["height"]:
+                    return mo
+        except Exception:
+            pass
+        return None
 
     # ── screenshot ──────────────────────────────────────────────
     def _screenshot(self, t, _):
@@ -727,6 +1502,9 @@ class Skills:
     def _weather(self, t, _):
         if "weather" not in t and "temperature" not in t and "forecast" not in t:
             return None
+        # idioms that contain "weather" but aren't a forecast request
+        if "under the weather" in t or "weather the storm" in t:
+            return None
         city = self.cfg.weather_city
         m = re.search(r"\b(?:weather|temperature|forecast)\s+(?:in|for|at)\s+(.+)", t)
         if m:
@@ -945,6 +1723,10 @@ class Skills:
         if not m:
             return None
         word = m.group(1)
+        # "spell check/checker this", "spell it correctly" etc. aren't spell-out requests
+        if word.lower() in {"check", "checker", "checking", "correctly",
+                            "it", "that", "this", "out", "me"}:
+            return None
         return f"{word} is spelled: " + "-".join(word.upper())
 
     # ── empty recycle bin ───────────────────────────────────────
@@ -963,30 +1745,86 @@ class Skills:
     def _agentic(self, t, original):
         if not self.cfg.allow_agentic:
             return None
-        m = re.search(r"\b(?:run (?:a )?task|engineer|do a task|code task)[:\s]+(.+)", original, re.IGNORECASE)
+        # Only fire on an UNAMBIGUOUS agentic command. The bare word "engineer"
+        # used to match here, so "what does a software engineer do" hijacked the
+        # turn into a 10-minute Claude Code subprocess — hence "engineer" is now
+        # accepted ONLY as an imperative at the very start of the utterance.
+        m = (re.search(r"\b(?:run (?:a )?task|do a task|code task)[:\s]+(.+)",
+                       original, re.IGNORECASE)
+             or re.match(r"\s*engineer\s+(.+)", original, re.IGNORECASE))
         if not m:
             return None
         task = m.group(1).strip()
-        workspace = ROOT / "workspace"
-        workspace.mkdir(exist_ok=True)
-        self.say(f"On it, {self.cfg.user_title}. Working on that now.")
+        u = self.cfg.user_title
+        ack = (f"On it, {u}. I'll work on that in the background and let you know the "
+               f"moment it's done — carry on.")
+        if self._run_mission is not None:
+            self._run_mission(f"Task: {task[:46]}",
+                              lambda mission: self._agentic_worker(mission, task), tag="AGENT")
+            return ack
+        # degraded path: no background runner → run inline (blocks the turn)
+        self.say(ack)
+        self._agentic_worker(_InlineMission(self.say), task)
+        return ""
+
+    # public entry so the assistant's brain-delegation can drive the agent directly
+    def run_agentic(self, mission, task: str) -> None:
+        self._agentic_worker(mission, task)
+
+    def _agentic_worker(self, mission, task: str) -> None:
+        """Drive a Claude agent on a real task, streaming progress to the mission panel
+        and speaking only the final summary.
+
+        Two safety tiers (see config.allow_full_control):
+          • default — sandboxed: runs in JARVIS's own ``workspace`` folder under
+            ``acceptEdits`` (it can write code/files and use web tools there, but has no
+            unrestricted, no-approval access to the wider system).
+          • full control — runs from your home dir with ``--dangerously-skip-permissions``
+            (can do anything, no prompts). Only when you explicitly opt in.
+        """
+        u = self.cfg.user_title
+        full = getattr(self.cfg, "allow_full_control", False)
+        if full:
+            cwd = str(Path.home())
+            cmd = ["-p", "--output-format", "json", "--dangerously-skip-permissions", task]
+        else:
+            workspace = ROOT / "workspace"
+            workspace.mkdir(exist_ok=True)
+            cwd = str(workspace)
+            cmd = ["-p", "--output-format", "json", "--permission-mode", "acceptEdits", task]
+        mission.step("Bringing the agent online" + ("  (full control)" if full else ""))
+        # only ONE heavy Claude agent runs at a time — several at once peg the CPU and
+        # make JARVIS sluggish to answer. Extra tasks queue here rather than pile on.
+        if not self._agent_sem.acquire(blocking=False):
+            mission.step("Queued — finishing the current task first")
+            self._agent_sem.acquire()
         try:
             import shutil as _sh
             claude = _sh.which("claude") or "claude"
+            mission.step("Working on the task")
             proc = subprocess.run(
-                [claude, "-p", "--permission-mode", "acceptEdits", "--output-format", "json", task],
+                [claude, *cmd],
                 capture_output=True, text=True, encoding="utf-8", errors="replace",
-                timeout=600, cwd=str(workspace),
+                timeout=900, cwd=cwd, creationflags=_LOWPRIO,   # below-normal priority
             )
             import json as _json
             try:
                 res = _json.loads(proc.stdout).get("result", "")
             except Exception:
                 res = (proc.stdout or "").strip()
-            summary = res.split("\n")[0][:220] if res else "the task is complete"
-            return f"Task complete, {self.cfg.user_title}. {summary}"
-        except Exception as e:
-            return f"The task ran into trouble: {e}"
+            summary = res.split("\n")[0][:240] if res else "it's done"
+            mission.step("Task complete")
+            mission.finish("done", tag="DONE")
+            mission.speak(f"Done, {u}. {summary}")
+        except subprocess.TimeoutExpired:
+            mission.error("the task took too long")
+            mission.speak(f"That one took longer than I allowed, {u} — I've stopped it for now.")
+        except Exception as e:  # noqa: BLE001
+            print(f"[skills] agentic error: {e}")
+            mission.error("the task ran into trouble")
+            mission.speak(f"That task ran into trouble, {u}. Have a look when you get a moment.")
+        finally:
+            self._agent_sem.release()
 
     # ── pleasantries ────────────────────────────────────────────
     def _pleasantries(self, t, _):

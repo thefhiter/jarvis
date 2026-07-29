@@ -184,6 +184,14 @@ def test_brain_chain_and_fallback():
     check("claude first without key", b2._chain()[0] == "claude", b2._chain())
     check("chain has all four", set(b2._chain()) == {"anthropic", "claude", "groq", "ollama"})
 
+    # groq auto-preferred when a free key is present (and no anthropic key)
+    cg = _cfg(); cg.brain = "claude"; cg.groq_api_key = "gsk_test"
+    bg = Brain(cg)
+    check("groq preferred with free key", bg._chain()[0] == "groq", bg._chain())
+    # anthropic still wins if BOTH keys are set (fastest + smartest)
+    cb = _cfg(); cb.brain = "claude"; cb.groq_api_key = "gsk"; cb.anthropic_api_key = "k"
+    check("anthropic beats groq when both set", Brain(cb)._chain()[0] == "anthropic")
+
     # fallback: first engine raises before any token → second engine used
     b3 = Brain(_cfg())
     def boom(_): raise RuntimeError("usage limit reached")
@@ -333,6 +341,27 @@ def test_vision():
     check("request has an image block", content[0]["type"] == "image"
           and content[0]["source"]["data"] == "QUJD")
     check("request has the question text", content[1]["type"] == "text")
+    # Groq vision path: with ONLY a groq key, ask_image uses the Groq multimodal model
+    class GResp:
+        status_code = 200
+        def json(self): return {"choices": [{"message": {"content": "A browser window, sir."}}]}
+    cg = _cfg(); cg.groq_api_key = "gsk_test"
+    bg = Brain(cg)
+    capg = {}
+    def fake_post_g(url, **kw):
+        capg["url"] = url; capg["body"] = kw.get("json"); return GResp()
+    B.requests.post = fake_post_g
+    try:
+        outg = bg.ask_image("what's up?", "QUJD")
+    finally:
+        B.requests.post = orig
+    check("groq vision reply parsed", outg == "A browser window, sir.", repr(outg))
+    check("groq vision hits the groq endpoint", "groq.com" in capg.get("url", ""))
+    check("groq vision sends an image_url",
+          capg["body"]["messages"][0]["content"][1]["type"] == "image_url")
+    # has_vision is anthropic-only (fast native path); groq-only screens go via the agent
+    check("has_vision needs an anthropic key", bg.has_vision() is False)
+
     # no key -> raises (assistant turns this into a 'add a key' prompt)
     b2 = Brain(_cfg())
     raised = False
@@ -340,7 +369,7 @@ def test_vision():
         b2.ask_image("x", "QUJD")
     except Exception:
         raised = True
-    check("vision without key raises", raised)
+    check("vision without any key raises", raised)
 
     # skill: triggers only for screen phrases, routes to the describe_image callback
     import core.skills as S
@@ -784,8 +813,19 @@ def test_skills():
             ("what time is it", True), ("what's the date", True), ("who are you", True),
             ("what can you do", True), ("open notepad", True), ("open youtube", True),
             ("search for quantum computing", True), ("play daft punk on youtube", True),
+            # natural media intent → play on YouTube
+            ("open lofi music", "YouTube"), ("put on some jazz", "YouTube"),
+            ("play lofi hip hop", "YouTube"), ("listen to some classical music", "YouTube"),
+            # broadened: "find/search X on youtube" must find + play, not fall to the brain
+            ("find seya gims morad on youtube", "YouTube"),
+            ("search seya gims morad on youtube", "YouTube"),
+            ("seya gims morad on youtube", "YouTube"),
+            ("pull up interstellar trailer on youtube", "YouTube"),
+            ("search youtube for lofi beats", "YouTube"),
+            ("search the web for grblhal", "grblhal"),
             ("set volume to 40", "40"), ("volume up", True), ("increase the brightness", True),
-            ("take a screenshot", True), ("system status", True), ("battery status", True),
+            ("take a screenshot", True), ("record my screen", "Recording"),
+            ("system status", True), ("battery status", True),
             ("minimize everything", True), ("make a note buy milk", True), ("read my notes", True),
             ("set a timer for 2 minutes", True), ("what's the weather", True),
             ("copy hello world to the clipboard", True), ("lock the computer", True),
@@ -807,6 +847,20 @@ def test_skills():
             ("what is the capital of France", None), ("what is the tallest mountain", None),
             ("what does the fox say", None), ("i have 3 cats and 2 dogs", None),
             ("tell me about the roman empire", None),
+            # regression: over-matches that used to hijack a conversational turn
+            ("what does a software engineer do", None),   # bare "engineer" → agentic (600s subprocess)
+            ("how do i become an engineer", None),
+            ("i had the time of my life", None),          # bare "the time" → clock
+            ("at the time i was busy", None),
+            ("spell check this document for me", None),   # "spell check" → spelled "check"
+            ("lets play devil's advocate here", None),    # "play X" idiom → YouTube
+            ("play it cool", None),
+            ("i'm feeling a bit under the weather today", None),  # "weather" idiom → forecast
+            # research must NOT hijack conversational uses of the word (→ brain)
+            ("what's the latest research on fusion", None),
+            ("the research shows promising results", None),
+            ("tell me about the research paper", None),
+            ("i need to do more research later", None),
         ]
         for phrase, expect in cases:
             try:
@@ -829,6 +883,20 @@ def test_skills():
         check("reminder scheduled", n_before == 1, n_before)
         check("cancel clears registry", len(sk._reminders) == 0 and "Cancelled" in str(cancel), cancel)
 
+        # screen recording: start (stubbed ffmpeg) → stop finalises + reports the file
+        class FakeRec:
+            def __init__(self): self.stdin = self
+            def poll(self): return None            # still running
+            def write(self, b): pass
+            def flush(self): pass
+            def wait(self, timeout=None): return 0
+            def terminate(self): pass
+        sk._rec_proc = FakeRec(); sk._rec_path = None
+        rstop = sk.handle("stop recording")
+        check("stop recording finalises", rstop is not None and "saved" in str(rstop).lower(), rstop)
+        check("stop clears the recorder", sk._rec_proc is None)
+        check("stop when idle is graceful", "not recording" in str(sk.handle("stop recording")).lower())
+
         # math must never execute arbitrary code
         check("math rejects names", sk.handle("what is __import__") is None)
         check("math guards huge power", sk.handle("what is 2 to the power of 999999") is None)
@@ -848,6 +916,199 @@ def test_skills():
         check("repeat doesn't hijack brain", sk2.handle("tell me about the moon") is None)
     finally:
         subprocess.Popen = _orig_popen
+
+
+# ════════════════════════════════════════════════════════════════════════════
+def test_research():
+    section("skills — live research trigger + helpers")
+    from core import config
+    from core.skills import Skills
+    sk = Skills(config.load(), FakeHud(), say=lambda t: None)
+
+    # ── topic extraction: genuine research/PDF commands → the clean topic ──
+    positives = [
+        # the exact frustrated request (typo'd "research" and all) → "cnc"
+        ("make a rresaerch about cnc on internet download pdfs do everything i want "
+         "to see windows flying in the pc", "cnc"),
+        ("make a research about cnc on internet download pdfs", "cnc"),
+        ("research quantum computing", "quantum computing"),
+        ("can you research black holes and download some pdfs", "black holes"),
+        ("download pdfs about machine learning", "machine learning"),
+        ("download the pdf about cnc", "cnc"),
+        ("find me some papers on climate change", "climate change"),
+        ("look into the history of rome", "history of rome"),
+        ("read up on photosynthesis", "photosynthesis"),
+        ("dig into neural networks", "neural networks"),
+        ("jarvis do some research on renewable energy online", "renewable energy"),
+        ("i want you to research the french revolution and open pdfs", "french revolution"),
+        ("go research CNC machining", "CNC machining"),
+        ("research online privacy", "online privacy"),   # "online" as topic, not a source hint
+        # "open/show pdfs" phrasings (the ones that used to fall through to the brain)
+        ("open pdfs about cnc in the browser", "cnc"),
+        ("open some pdfs on cnc", "cnc"),
+        ("show me pdfs about cnc", "cnc"),
+        ("open black hole pdfs", "black hole"),
+        ("open some quantum computing pdfs", "quantum computing"),
+        ("can you open pdfs in the browser about cnc", "cnc"),
+        ("show me papers on climate change", "climate change"),
+        ("download pdfs about cnc and open them in the browser", "cnc"),
+    ]
+    for phrase, topic in positives:
+        got = sk._research_topic(phrase.lower(), phrase)
+        check(f"research topic {phrase!r}", got is not None and got.lower() == topic.lower(),
+              f"got {got!r}, want {topic!r}")
+
+    # ── conversational / unrelated uses → None (fall through to the brain) ──
+    negatives = [
+        "what's the latest research on fusion",
+        "the research shows promising results",
+        "tell me about the research paper",
+        "i need to do more research later",
+        "what is the capital of france",
+        "research",                      # bare word, nothing to research
+        "open notepad",
+        "play some jazz",
+        "search for quantum computing",   # a plain search, not a research blitz
+        "look up the weather",            # "look up" ≠ "look into"
+        # "open/show" with no real topic → _open / brain, NOT research
+        "open the pdfs",
+        "open them in the browser",
+        "open my documents folder",
+        "open my documents",
+        "open the file",
+        "show me my files",
+        "yes in pdfs opening in the browser",   # the frustrated follow-up: no topic to research
+    ]
+    for phrase in negatives:
+        got = sk._research_topic(phrase.lower(), phrase)
+        check(f"research NOT fired {phrase!r}", got is None, f"got {got!r}")
+
+    # ── pure helpers (no network) ─────────────────────────────────────────
+    check("safe_name sanitises", sk._safe_name("C/N:C machining?") == "CNC_machining")
+    check("pdf filename adds .pdf", sk._pdf_filename("https://x.org/a/report") == "report.pdf")
+    check("pdf filename keeps .pdf", sk._pdf_filename("https://x.org/g320.pdf?dl=1") == "g320.pdf")
+    check("ddg decode unwraps redirect",
+          sk._ddg_decode("//duckduckgo.com/l/?uddg=https%3A%2F%2Fa.org%2Fx.pdf&rut=z")
+          == "https://a.org/x.pdf")
+    check("ddg decode passes direct url",
+          sk._ddg_decode("https://a.org/x.pdf") == "https://a.org/x.pdf")
+
+    # ── _find_pdf_urls prefers .pdf links, dedups, then backfills ──────────
+    sk._ddg_links = lambda q, limit=3: [
+        "https://a.org/one.pdf", "https://b.org/page", "https://a.org/one.pdf",
+        "https://c.org/two.pdf", "https://d.org/article",
+    ]
+    pdfs = sk._find_pdf_urls("cnc", 3)
+    check("pdf urls: .pdf first + deduped",
+          pdfs == ["https://a.org/one.pdf", "https://c.org/two.pdf", "https://b.org/page"], pdfs)
+
+    # ── explanation is best-effort: no brain wired → '' (research still ends) ──
+    check("explain without brain → ''", sk._brain_explain("cnc") == "")
+    sk2 = Skills(config.load(), FakeHud(), say=lambda t: None,
+                 ask_brain=lambda p: "CNC is computer-controlled machining, sir.")
+    check("explain with brain", "machining" in sk2._brain_explain("cnc"))
+    boom = Skills(config.load(), FakeHud(), say=lambda t: None,
+                  ask_brain=lambda p: (_ for _ in ()).throw(RuntimeError("down")))
+    check("explain swallows brain error", boom._brain_explain("cnc") == "")
+
+
+# ════════════════════════════════════════════════════════════════════════════
+def test_missions():
+    section("agent — background missions + activity panel")
+    from core.assistant import Mission
+
+    # ── Mission state machine → HUD broadcasts ──
+    pushes = []
+    class CapHud:
+        def mission(self, s): pushes.append(s)
+    spoken = []
+    m = Mission(CapHud(), "m1", "Researching cnc", "RESEARCH", lambda t: spoken.append(t))
+    m.step("Opening sources")
+    check("first step active", pushes[-1]["steps"][0]["state"] == "active")
+    check("push carries id/title/tag", pushes[-1]["id"] == "m1"
+          and pushes[-1]["title"] == "Researching cnc" and pushes[-1]["tag"] == "RESEARCH")
+    m.note("3 found")
+    check("note sets detail on active step", pushes[-1]["steps"][0]["detail"] == "3 found")
+    m.step("Downloading")
+    check("advancing marks prev step done", pushes[-1]["steps"][0]["state"] == "done")
+    check("new step is active", pushes[-1]["steps"][1]["state"] == "active")
+    m.speak("all done sir")
+    check("speak routes to TTS", spoken == ["all done sir"])
+    m.finish("done", tag="DONE")
+    fin = pushes[-1]
+    check("finish marks every step done", all(s["state"] == "done" for s in fin["steps"]))
+    check("finish sets status + tag", fin["status"] == "done" and fin["tag"] == "DONE")
+    # error path
+    m2 = Mission(CapHud(), "m2", "x", "AGENT", lambda t: None)
+    m2.step("trying"); m2.error("snag")
+    check("error sets status/FAILED", pushes[-1]["status"] == "error" and pushes[-1]["tag"] == "FAILED")
+
+    # ── Assistant.run_mission: non-blocking, tracked, then cleared ──
+    import time as _t, threading
+    from core import config
+    from core.hud import Hud as WsHud
+    from core.assistant import Assistant
+    a = Assistant(config.Config(), WsHud("127.0.0.1", 8799))   # hud never .start()ed → sends no-op
+    try:
+        started = threading.Event(); release = threading.Event()
+        def worker(mn):
+            mn.step("phase 1"); started.set(); release.wait(2.0); mn.step("phase 2")
+        a.run_mission("Test job", worker, tag="AGENT")
+        check("run_mission is non-blocking", started.wait(2.0))
+        check("active mission tracked", a.active_missions() == ["Test job"], a.active_missions())
+        release.set()
+        for _ in range(60):
+            if not a.active_missions(): break
+            _t.sleep(0.05)
+        check("mission cleared after worker returns", a.active_missions() == [], a.active_missions())
+        # a worker that throws must not crash the app and must still clear
+        a.run_mission("Boom", lambda mn: (_ for _ in ()).throw(RuntimeError("x")))
+        for _ in range(60):
+            if not a.active_missions(): break
+            _t.sleep(0.05)
+        check("throwing mission is contained + cleared", a.active_missions() == [])
+    finally:
+        a.brain.close()
+
+    # ── skills.research dispatches a BACKGROUND mission + returns an instant ack ──
+    import webbrowser, os
+    _orig_open = webbrowser.open
+    webbrowser.open = lambda *a, **k: True
+    if hasattr(os, "startfile"):
+        os.startfile = lambda *a, **k: None
+    try:
+        from core.skills import Skills
+        pushed = []; said = []
+        class H2:
+            def mission(self, s): pushed.append(s)
+            def __getattr__(self, n): return lambda *a, **k: None
+        def sync_run(title, worker, tag="AGENT"):
+            mm = Mission(H2(), "x", title, tag, lambda t: said.append(t))
+            worker(mm)
+            if mm.status == "running": mm.finish("done")
+            return mm
+        sk = Skills(config.load(), H2(), say=lambda t: said.append("ACK:" + t),
+                    ask_brain=lambda p: "CNC is computer-controlled machining, sir.",
+                    run_mission=sync_run, active_missions=lambda: ["researching cnc"])
+        sk._ddg_links = lambda q, limit=3: []
+        sk._find_pdf_urls = lambda topic, limit=6: []
+        ret = sk.handle("make a research about cnc and download pdfs")
+        check("research returns an instant ack", ret is not None and "researching cnc" in ret.lower(), ret)
+        check("ack is spoken by the turn, not the worker", "ACK:" not in "".join(p for p in said))
+        check("mission streamed steps", len(pushed) >= 3 and pushed[-1]["status"] == "done")
+        check("worker spoke the explanation", any("machining" in s for s in said), said)
+        # "what are you working on" reports live missions
+        st = sk.handle("what are you working on")
+        check("mission-status query works", st is not None and "researching cnc" in st.lower(), st)
+        # with no runner wired, research still works inline (degraded path)
+        sk_inline = Skills(config.load(), H2(), say=lambda t: said.append("SAY:" + t),
+                           ask_brain=lambda p: "", run_mission=None)
+        sk_inline._ddg_links = lambda q, limit=3: []
+        sk_inline._find_pdf_urls = lambda topic, limit=6: []
+        r2 = sk_inline.handle("research black holes and download pdfs")
+        check("inline research returns '' (already spoke)", r2 == "", r2)
+    finally:
+        webbrowser.open = _orig_open
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -888,6 +1149,224 @@ def test_clap():
 
 
 # ════════════════════════════════════════════════════════════════════════════
+def test_recording():
+    section("skills — monitor-aware screen recording")
+    import subprocess, os, webbrowser
+    from core import config
+    from core.skills import Skills
+
+    class FakePopen:
+        def __init__(self, *a, **k): self.stdin = self; self.args = a[0] if a else []
+        def poll(self): return None
+        def write(self, b): pass
+        def flush(self): pass
+        def wait(self, timeout=None): return 0
+        def terminate(self): pass
+
+    _op = subprocess.Popen
+    subprocess.Popen = FakePopen
+    webbrowser.open = lambda *a, **k: True
+    if hasattr(os, "startfile"):
+        os.startfile = lambda *a, **k: None
+    try:
+        sk = Skills(config.load(), FakeHud(), say=lambda t: None)
+        MONS = [{"left": 0, "top": 0, "width": 1920, "height": 1080, "primary": True},
+                {"left": 1920, "top": 0, "width": 1280, "height": 1024, "primary": False}]
+        sk._monitors = staticmethod(lambda: MONS).__func__
+        sk._monitors = lambda: MONS
+        sk._foreground_monitor = lambda mons: MONS[1]     # foreground on screen 2
+
+        def where(phrase):
+            mon, w = sk._pick_record_monitor(phrase.lower())
+            return mon, w
+        m, w = where("record screen 1")
+        check("screen 1 selected", m["left"] == 0 and "1" in w, (m, w))
+        m, w = where("record screen 2")
+        check("screen 2 selected", m["left"] == 1920, (m, w))
+        m, w = where("record the second screen")
+        check("second screen selected", m and m["left"] == 1920, (m, w))
+        m, w = where("record the main screen")
+        check("main screen selected", m["primary"] is True, (m, w))
+        m, w = where("record this screen")
+        check("this screen = foreground monitor", m["left"] == 1920, (m, w))
+        m, w = where("record everything")
+        check("whole desktop = no offset", m is None, (m, w))
+        m, w = where("record my screen")
+        check("default = the screen you're on", m["left"] == 1920, (m, w))
+
+        # "start recording" must reach _record, NOT be hijacked by _open ("start X")
+        r = sk.handle("start recording")
+        check("start recording → _record not _open", r is not None and "Recording" in r and "Opening" not in r, r)
+        # ffmpeg is invoked with a per-monitor crop for a specific screen
+        sk._rec_proc = None
+        sk.handle("record screen 2")
+        argv = sk._rec_proc.args
+        check("ffmpeg got the screen-2 offset", "1920" in argv and "-offset_x" in argv, argv)
+        check("ffmpeg got the screen-2 size", "1280x1024" in argv, argv)
+    finally:
+        subprocess.Popen = _op
+
+
+# ════════════════════════════════════════════════════════════════════════════
+def test_delegation():
+    section("assistant — brain delegates real tasks to the agent")
+    from core import config
+    from core.hud import Hud
+    from core.assistant import Assistant
+    a = Assistant(config.Config(), Hud("127.0.0.1", 8801))   # hud never started → no-op sends
+    try:
+        spoken = []; streamed = []; missions = []
+        a._say = lambda t: spoken.append(t)
+        a._say_stream = lambda chunks: streamed.append("".join(chunks))
+        a.run_mission = lambda title, worker, tag="AGENT": missions.append((title, tag))
+
+        # 1) a DELEGATE directive → hands off to the agent, does NOT speak it aloud
+        a.brain.ask_stream = lambda text: iter(["DELEGATE: ", "organize my downloads folder by type"])
+        a._handle_brain("sort out my downloads")
+        check("delegate spawns an agent mission", len(missions) == 1 and missions[0][1] == "AGENT", missions)
+        check("delegate carries the task", "organize" in missions[0][0].lower(), missions)
+        check("delegate is not spoken as a reply", streamed == [], streamed)
+        check("delegate speaks a short ack", any("on it" in s.lower() for s in spoken), spoken)
+
+        # 2) a plain answer → streams to speech, no mission
+        spoken.clear(); streamed.clear(); missions.clear()
+        a.brain.ask_stream = lambda text: iter(["The capital of France ", "is Paris, sir."])
+        a._handle_brain("what's the capital of france")
+        check("normal reply is spoken", len(streamed) == 1 and "Paris" in streamed[0], streamed)
+        check("normal reply spawns no mission", missions == [], missions)
+
+        # 3) single-chunk DELEGATE also works
+        spoken.clear(); streamed.clear(); missions.clear()
+        a.brain.ask_stream = lambda text: iter(["DELEGATE: install 7-zip and pin it to the taskbar"])
+        a._handle_brain("get me 7zip")
+        check("single-chunk delegate → mission", len(missions) == 1 and "install" in missions[0][0].lower(), missions)
+        check("single-chunk delegate not spoken", streamed == [], streamed)
+    finally:
+        a.brain.close()
+
+
+# ════════════════════════════════════════════════════════════════════════════
+def test_instagram():
+    section("skills — Instagram insights + agent low-priority")
+    import os
+    import webbrowser
+    import core.skills as S
+    from core import config
+    from core.skills import Skills
+
+    # heavy Claude agents must run below-normal priority (Windows) so they don't
+    # starve JARVIS's responsiveness
+    if os.name == "nt":
+        check("agent low-priority flag set", S._LOWPRIO != 0)
+
+    opened = []
+    _orig = webbrowser.open
+    webbrowser.open = lambda u, *a, **k: opened.append(u) or True
+    try:
+        missions = []
+        sk = Skills(config.load(), FakeHud(), say=lambda t: None,
+                    run_mission=lambda title, worker, tag="AGENT": missions.append((title, tag)))
+        # insights intent → opens the desktop insight surfaces + a read mission
+        opened.clear(); missions.clear()
+        r = sk.handle("check my statics on instagram reels")
+        check("instagram insights fires", r is not None and "insights" in r.lower(), r)
+        check("opens IG + business suite", any("instagram.com" in u for u in opened)
+              and any("business.facebook" in u for u in opened), opened)
+        check("kicks a VISION read mission", missions and missions[0][1] == "VISION", missions)
+        # plain "open instagram" just opens it
+        opened.clear()
+        r = sk.handle("open instagram")
+        check("open instagram just opens", r is not None and opened == ["https://www.instagram.com/"], (r, opened))
+        # unrelated instagram mention doesn't hijack
+        check("bare 'on instagram' → brain", sk.handle("whats on instagram") is None)
+        check("non-instagram unaffected", sk._instagram("what time is it", "what time is it") is None)
+    finally:
+        webbrowser.open = _orig
+
+
+# ════════════════════════════════════════════════════════════════════════════
+def test_chained_commands():
+    section("assistant — chained multi-command turns")
+    from core import config
+    from core.hud import Hud
+    from core.assistant import Assistant
+    a = Assistant(config.Config(), Hud("127.0.0.1", 8805))
+    try:
+        # the exact failing case: "play … then research … then check …" → 3 commands,
+        # and the commas inside the research part stay as ONE segment
+        s = a._split_commands("play a song on youtube then make a research about cnc "
+                              "components, program, algorithm then check my instagram reels")
+        check("splits on 'then' into 3", len(s) == 3, s)
+        check("commas inside a segment are kept",
+              s[1] == "make a research about cnc components, program, algorithm", s)
+        # bare 'and' / comma lists do NOT split
+        check("bare 'and' doesn't split",
+              a._split_commands("research cnc and download pdfs") == ["research cnc and download pdfs"])
+        check("semicolons split", len(a._split_commands("open notepad; open chrome; take a screenshot")) == 3)
+        check("'after that' splits", len(a._split_commands("organize my files after that open spotify")) == 2)
+        check("single command unchanged", a._split_commands("what time is it") == ["what time is it"])
+
+        # _process must dispatch EVERY segment (skills for matched, brain for the rest)
+        handled = []; brained = []
+        a.skills.handle = lambda seg: (handled.append(seg) or
+                                       ("ok" if ("youtube" in seg or "research" in seg) else None))
+        a._say = lambda t: None
+        a._handle_brain = lambda seg: brained.append(seg)
+        a._process("play a song on youtube then research cnc then check my instagram reels")
+        check("all three segments dispatched",
+              handled == ["play a song on youtube", "research cnc", "check my instagram reels"], handled)
+        check("the unmatched segment escalates to the brain (delegate)",
+              brained == ["check my instagram reels"], brained)
+
+        # ── the intelligent planner: brain decomposes messy multi-part requests ──
+        a.brain.ask = lambda p: '["play lofi on youtube", "research cnc", "check my instagram stats"]'
+        r = a._resolve_commands("play a song and research cnc and check my instagram")
+        check("multi-part request → decomposed via brain", len(r) == 3 and r[0] == "play lofi on youtube", r)
+        # JSON embedded in chatter is still extracted
+        a.brain.ask = lambda p: 'Sure! ["research cnc components programs and algorithms"] done'
+        r = a._resolve_commands("research cnc components, programs, algorithms please now")
+        check("list-of-subparts kept as ONE command", r == ["research cnc components programs and algorithms"], r)
+        # simple/short commands are NOT planned (stay instant), and questions pass through
+        planned = {"n": 0}
+        a.brain.ask = lambda p: planned.__setitem__("n", planned["n"] + 1) or "[]"
+        check("simple command not planned", a._resolve_commands("play lofi") == ["play lofi"])
+        check("short phrase not planned", a._resolve_commands("what time is it") == ["what time is it"])
+        check("no brain call for simple commands", planned["n"] == 0)
+        # explicit 'then' still uses the fast regex split (no brain call)
+        check("explicit 'then' splits without the brain",
+              a._resolve_commands("play a song then research cnc") == ["play a song", "research cnc"]
+              and planned["n"] == 0)
+        # a failed/garbage plan falls back to the raw text (never crashes the turn)
+        a.brain.ask = lambda p: "not json at all"
+        check("plan failure → raw text fallback",
+              a._resolve_commands("do this and that and the other stuff") == ["do this and that and the other stuff"])
+    finally:
+        a.brain.close()
+
+
+# ════════════════════════════════════════════════════════════════════════════
+def test_mic_gain():
+    section("voice — quiet-mic auto gain")
+    import numpy as np
+    from core.voice import Ears
+    g = Ears._normalize_gain
+    # a quiet mic (peak ~0.02) gets boosted toward ~0.3 so whisper can hear it
+    quiet = (np.sin(np.linspace(0, 50, 4000)) * 0.02).astype(np.float32)
+    out = g(quiet)
+    check("quiet audio boosted", 0.25 <= float(np.max(np.abs(out))) <= 0.35,
+          float(np.max(np.abs(out))))
+    # already-loud audio is left alone (no clipping blow-up)
+    loud = (np.sin(np.linspace(0, 50, 4000)) * 0.6).astype(np.float32)
+    check("loud audio untouched", abs(float(np.max(np.abs(g(loud)))) - 0.6) < 1e-3)
+    # pure silence stays silent (never amplify the noise floor into hallucinations)
+    silence = np.zeros(4000, dtype=np.float32)
+    check("silence stays silent", float(np.max(np.abs(g(silence)))) == 0.0)
+    # gain is capped (an extremely faint signal isn't blown up past the cap)
+    faint = (np.sin(np.linspace(0, 50, 4000)) * 0.005).astype(np.float32)
+    check("gain capped at 20x", float(np.max(np.abs(g(faint)))) <= 0.005 * 20 + 1e-6)
+
+
+# ════════════════════════════════════════════════════════════════════════════
 def main():
     print("JARVIS offline test suite")
     for t in (test_config, test_brain_anthropic_parser, test_groq_ollama_parsers,
@@ -896,7 +1375,8 @@ def main():
               test_decimal_stream_split,
               test_stream_json_parser, test_math_safety, test_regex_antishadow,
               test_datecalc_and_ip, test_reminder_persistence, test_reminder_fire,
-              test_skills, test_clap):
+              test_skills, test_research, test_missions, test_recording, test_delegation,
+              test_instagram, test_chained_commands, test_clap, test_mic_gain):
         try:
             t()
         except Exception as e:

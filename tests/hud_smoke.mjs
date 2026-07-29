@@ -153,6 +153,9 @@ const messages = [
   { type: 'brain', name: 'anthropic' },
   { type: 'telemetry', cpu: 22, mem: 47 },
   { type: 'state', state: 'listening' },
+  { type: 'user_partial', text: '' },              // live "listening…" cue
+  { type: 'user_partial', text: 'research c' },     // live partial transcription
+  { type: 'user_partial', text: 'research cnc and download' },
   { type: 'spectrum', bins: Array.from({ length: 32 }, (_, i) => (i % 5) / 5), level: 0.6 },
   { type: 'state', state: 'thinking' },
   { type: 'user', text: "what's the capital of France?" },
@@ -164,6 +167,22 @@ const messages = [
   { type: 'pulse' },
   { type: 'state', state: 'idle' },
   { type: 'jarvis', text: 'A non-streamed reply (typewriter path).' },
+  // agent activity panel — running → done, plus a second mission that fails
+  { type: 'mission', mission: { id: 'm1', title: 'Researching CNC', tag: 'RESEARCH', status: 'running',
+      steps: [ { label: 'Opening web, encyclopaedia & video sources', state: 'done', detail: '' },
+               { label: 'Pulling PDFs off the internet', state: 'active', detail: 'Downloading PDF 2…' } ] } },
+  { type: 'mission', mission: { id: 'm1', title: 'Researching CNC', tag: 'DONE', status: 'done',
+      steps: [ { label: 'Opening web, encyclopaedia & video sources', state: 'done' },
+               { label: 'Downloaded 3 PDFs -> Documents', state: 'done' },
+               { label: 'Explaining the topic', state: 'done' } ] } },
+  { type: 'mission', mission: { id: 'm2', title: 'Task: tidy the repo', tag: 'AGENT', status: 'running',
+      steps: [ { label: 'Working on the task', state: 'active', detail: '' } ] } },
+  { type: 'mission', mission: { id: 'm2', title: 'Task: tidy the repo', tag: 'FAILED', status: 'error',
+      steps: [ { label: 'Working on the task', state: 'done' },
+               { label: 'ran into a snag', state: 'done' } ] } },
+  // compact corner mode on/off
+  { type: 'compact', on: true, label: 'Researching CNC' },
+  { type: 'compact', on: false },
   { type: 'config', config: {
       brain: 'anthropic', has_anthropic_key: true, anthropic_model: 'claude-haiku-4-5-20251001',
       has_groq_key: false, groq_model: 'llama-3.3-70b-versatile', ollama_model: 'llama3.2',

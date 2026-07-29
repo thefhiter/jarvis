@@ -95,8 +95,34 @@ start.bat
 Then just say **“Hey Jarvis”**. `start-debug.bat` runs the same thing with a visible
 console if you want to watch the logs.
 
-**Controls:** say “Hey Jarvis” · click the core or press **Space** to talk · press **T** to
-type · press the **⚙ gear** for settings · **Esc** to stop/close · **⏻** to power down.
+**Controls:** say “Hey Jarvis” · click the core or press **Space** to talk · **just start
+typing** to send a text command (no key needed first) · **⚙ gear** for settings ·
+**Esc** to stop/close · **⏻** to power down.
+
+**Fast replies:** the zero-key Claude CLI brain answers in ~3 s. For **sub-second**
+replies (the reel’s snappiness), paste a free key from
+[console.groq.com](https://console.groq.com) into the **⚙ gear** → *⚡ Instant replies* —
+JARVIS switches to it automatically. Speech-to-text runs the fast `base` Whisper model by
+default; bump it to `small`/`medium` in the gear if you want more accuracy over speed.
+
+**Agent mode — it works while you keep talking.** Say **“research CNC and download some
+PDFs”**, **“look into black holes”**, or **“engineer a script that renames my files”**, and
+JARVIS kicks the job off as a **background mission**: it answers *“On it, sir”* immediately
+and stays free for your next command while it works. A live **agent-activity panel** streams
+every step on the HUD in real time — *Opening sources ✓ · Scanning articles ✓ · Downloading
+PDF 2/4… · Explaining…* — the “Jarvis is working” shot from the reel. Research throws the
+web / Wikipedia / YouTube results open, opens the top articles, pulls real PDFs into
+`Documents\Jarvis Research\<topic>\`, opens each one, and finishes with a spoken explanation.
+Ask **“what are you working on?”** any time. Toggles: `allow_research` / `allow_agentic` in
+`config.json`.
+
+**Show it off (social media):**
+- **▶ Demo** (top-right, or launch with `start.bat --demo` / `python run.py --demo`) plays a
+  curated, perfectly-paced showcase in JARVIS's real voice — ideal to record.
+- **⏺ Record** captures the cinematic HUD (window + voice where the OS allows, else the
+  reactor canvas) to a `jarvis-*.webm` clip you can post. Click again to stop & save.
+  Convert to MP4/GIF with ffmpeg if a platform needs it:
+  `ffmpeg -i jarvis-xxxx.webm jarvis.mp4`
 
 > Already set up on this machine — the `.venv` and models are in place, so you can run
 > `start.bat` directly. To preview just the HUD (no mic), run
@@ -122,6 +148,7 @@ All settings live in **`config.json`** (created on first run). Highlights:
 | `hud_fullscreen` | `false` | launch the HUD fullscreen |
 | `allow_shutdown` | `true` | permit lock/sleep/shutdown commands |
 | `allow_agentic` | `true` | permit “run a task” → Claude Code |
+| `allow_research` | `true` | permit “research X” → live web research: open pages, download PDFs |
 | `weather_city` | `""` | default city (blank = auto by IP) |
 
 ## Architecture
